@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# autojob 실행 진입점. `npm link` 후 어디서든 `autojob ...`으로 실행할 수 있다.
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/cli.ts" "$@"

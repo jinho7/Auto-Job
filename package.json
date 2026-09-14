@@ -1,0 +1,31 @@
+{
+  "name": "auto-job",
+  "version": "0.1.0",
+  "private": true,
+  "description": "채용 공고 수집 → Notion 정리 → 지원서 작성(임시저장)까지 AI로 자동화하는 개인용 취업 도구",
+  "type": "module",
+  "bin": {
+    "autojob": "bin/autojob"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "autojob": "tsx src/cli.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@inquirer/prompts": "^8.7.2",
+    "commander": "^15.0.0",
+    "playwright-core": "^1.63.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

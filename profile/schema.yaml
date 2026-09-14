@@ -1,0 +1,217 @@
+# 내 정보 항목 정의
+# 편집기(autojob profile), 검사(autojob profile check), 빈 틀 생성(autojob init), 지원서 자동 입력이 모두 이 파일을 따른다.
+# 항목을 추가하거나 바꾸려면 이 파일만 고치면 된다.
+#
+# type
+#   text      한 줄 글 (기본값)
+#   longtext  여러 줄 글
+#   number    숫자 (3.85)
+#   date      날짜 YYYY.MM.DD
+#   month     연월 YYYY.MM
+#   select    options 중 하나 (allow_other: true면 직접 입력 허용)
+#   tags      여러 값 목록
+#   file      profile/me/files/ 안의 파일 이름
+#   group     하위 항목 묶음 (fields)
+#   list      여러 개 추가할 수 있는 항목 (item)
+# 기타 속성: label(필수), required, hint, example, pattern(정규식), min_items(list)
+
+sections:
+  basic:
+    label: 기본정보
+    fields:
+      name:
+        label: 이름
+        type: group
+        fields:
+          ko: { label: 이름(한글), required: true, example: 홍길동 }
+          en: { label: 이름(영문), hint: 여권 영문명, example: HONG GILDONG }
+          hanja: { label: 이름(한자) }
+      birth: { label: 생년월일, type: date, required: true }
+      gender: { label: 성별, type: select, options: [남, 여] }
+      phone: { label: 휴대폰, required: true, pattern: '^0\d{1,2}-\d{3,4}-\d{4}$', example: 010-1234-5678 }
+      emergency_phone: { label: 비상연락처, pattern: '^0\d{1,2}-\d{3,4}-\d{4}$' }
+      email: { label: 이메일, required: true, pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$' }
+      address:
+        label: 주소
+        type: group
+        fields:
+          zipcode: { label: 우편번호, pattern: '^\d{5}$' }
+          road: { label: 도로명 주소, required: true }
+          detail: { label: 상세 주소, hint: 동/호수 }
+      military:
+        label: 병역
+        type: group
+        fields:
+          status: { label: 병역 구분, type: select, options: [군필, 미필, 면제, 복무중, 해당없음] }
+          branch: { label: 군별, type: select, allow_other: true, options: [육군, 해군, 공군, 해병대, 의무경찰, 사회복무요원, 산업기능요원, 전문연구요원] }
+          rank: { label: 계급, example: 병장 }
+          start: { label: 입대일, type: date }
+          end: { label: 전역일, type: date }
+          exemption_reason: { label: 면제 사유 }
+      veteran: { label: 보훈 대상, type: select, options: [비대상, 대상] }
+      disability: { label: 장애 여부, type: select, options: [비대상, 대상] }
+      photo: { label: 증명사진, type: file }
+      links:
+        label: 링크
+        type: group
+        fields:
+          github: { label: GitHub }
+          blog: { label: 블로그 }
+          portfolio: { label: 포트폴리오 }
+
+  education:
+    label: 학력 / 연구
+    fields:
+      high_school:
+        label: 고등학교
+        type: group
+        fields:
+          name: { label: 학교명 }
+          type: { label: 계열, type: select, allow_other: true, options: [일반고, 특목고, 자율고, 특성화고, 검정고시] }
+          region: { label: 소재지 }
+          graduated: { label: 졸업 연월, type: month }
+          status: { label: 졸업 구분, type: select, options: [졸업, 졸업예정] }
+      universities:
+        label: 대학교
+        type: list
+        min_items: 1
+        hint: 최신순. 편입했다면 이전 학교도 따로 추가
+        item:
+          name: { label: 학교명, required: true }
+          campus: { label: 본교/분교, type: select, options: [본교, 분교] }
+          degree: { label: 학위, type: select, required: true, options: [전문학사, 학사, 석사, 박사] }
+          major: { label: 전공, required: true }
+          double_major: { label: 복수전공 }
+          minor: { label: 부전공 }
+          admitted: { label: 입학 연월, type: month, required: true }
+          graduated: { label: 졸업(예정) 연월, type: month }
+          status: { label: 학적 상태, type: select, required: true, options: [졸업, 졸업예정, 재학, 휴학, 수료, 중퇴] }
+          admission_type: { label: 입학 구분, type: select, options: [입학, 편입] }
+          gpa: { label: 학점, type: number }
+          gpa_max: { label: 학점 만점, type: select, options: ['4.5', '4.3', '4.0', '100'] }
+          major_gpa: { label: 전공 학점, type: number }
+          location: { label: 소재지 }
+          thesis: { label: 졸업 논문/작품 }
+      research:
+        label: 논문 / 연구
+        type: list
+        item:
+          title: { label: 제목, required: true }
+          venue: { label: 학회/저널 }
+          date: { label: 발표 연월, type: month }
+          role: { label: 역할, type: select, allow_other: true, options: [제1저자, 공동저자, 교신저자] }
+          summary: { label: 요약, type: longtext }
+
+  career:
+    label: 경력 / 교육 / NCS
+    fields:
+      experiences:
+        label: 경력
+        type: list
+        hint: 경력, 인턴, 아르바이트. 최신순
+        item:
+          type: { label: 구분, type: select, allow_other: true, options: [정규직, 계약직, 인턴, 아르바이트, 프리랜서] }
+          company: { label: 회사명, required: true }
+          department: { label: 부서 }
+          position: { label: 직급/직책 }
+          start: { label: 시작 연월, type: month, required: true }
+          end: { label: 종료 연월, type: month, hint: 재직중이면 비움 }
+          duties: { label: 담당 업무, type: longtext }
+          reason_for_leaving: { label: 퇴사 사유 }
+      trainings:
+        label: 교육 이수
+        type: list
+        hint: 부트캠프, 기관 교육 등
+        item:
+          name: { label: 과정명, required: true }
+          institution: { label: 교육기관 }
+          start: { label: 시작 연월, type: month }
+          end: { label: 종료 연월, type: month }
+          hours: { label: 교육 시간, type: number }
+          content: { label: 교육 내용, type: longtext }
+      ncs:
+        label: NCS 직업교육 / 직무경험
+        type: list
+        hint: 공기업 NCS 기반 지원서용
+        item:
+          category: { label: 구분, type: select, required: true, options: [직업교육, 직무경험, 경력] }
+          name: { label: 과목/활동명, required: true }
+          institution: { label: 기관 }
+          start: { label: 시작 연월, type: month }
+          end: { label: 종료 연월, type: month }
+          hours: { label: 시간, type: number }
+          content: { label: 내용, type: longtext }
+
+  extras:
+    label: 어학 / 자격 / 기타
+    fields:
+      languages:
+        label: 어학
+        type: list
+        item:
+          test: { label: 시험명, required: true, example: TOEIC }
+          score: { label: 점수/등급, required: true }
+          date: { label: 취득일, type: date }
+          expires: { label: 만료일, type: date }
+          reg_no: { label: 수험번호/등록번호 }
+      certificates:
+        label: 자격증
+        type: list
+        item:
+          name: { label: 자격증명, required: true, example: 정보처리기사 }
+          issuer: { label: 발급기관 }
+          date: { label: 취득일, type: date }
+          number: { label: 자격번호 }
+      awards:
+        label: 수상
+        type: list
+        item:
+          name: { label: 수상명, required: true }
+          issuer: { label: 수여기관 }
+          date: { label: 수상 연월, type: month }
+          detail: { label: 내용, type: longtext }
+      activities:
+        label: 대외활동 / 동아리 / 프로젝트
+        type: list
+        item:
+          type: { label: 구분, type: select, allow_other: true, options: [동아리, 대외활동, 봉사, 프로젝트, 해외경험] }
+          name: { label: 활동명, required: true }
+          organization: { label: 기관/단체 }
+          role: { label: 역할 }
+          start: { label: 시작 연월, type: month }
+          end: { label: 종료 연월, type: month }
+          detail: { label: 내용, type: longtext }
+      computer_skills:
+        label: 컴퓨터 활용 / 기술
+        type: list
+        item:
+          name: { label: 기술명, required: true }
+          level: { label: 수준, type: select, options: [상, 중, 하] }
+
+  target:
+    label: 희망 조건
+    fields:
+      job_roles: { label: 희망 직무, type: tags }
+      employment_types: { label: 희망 고용형태, type: tags }
+      regions: { label: 희망 근무지, type: tags }
+      salary: { label: 희망 연봉, hint: 비우면 "회사 내규에 따름"을 고른다 }
+      available_from: { label: 입사 가능일, type: date }
+
+  stories:
+    label: 자기소개서 소재
+    fields:
+      items:
+        label: 소재
+        type: list
+        hint: 자소서를 쓸 때 AI가 문항마다 1~2개씩 골라 쓰는 경험. 수치와 과정이 구체적일수록 좋다
+        item:
+          title: { label: 소재 이름, required: true }
+          period: { label: 기간, example: 2025.03 ~ 2025.08 }
+          context: { label: 소속/맥락, hint: '블라인드 대비로 실명 대신 "OO 관련 동아리"처럼 적어도 됨' }
+          role: { label: 내 역할 }
+          situation: { label: 상황, type: longtext, hint: 어떤 문제가 있었나 }
+          action: { label: 행동, type: longtext, hint: 무엇을 왜 어떻게 했나 }
+          result: { label: 결과, type: longtext, hint: 가능하면 수치로 }
+          learned: { label: 배운 점, type: longtext }
+          fits: { label: 어울리는 문항 유형, type: tags, example: '직무 역량, 문제 해결, 협업' }
+          keywords: { label: 키워드, type: tags }

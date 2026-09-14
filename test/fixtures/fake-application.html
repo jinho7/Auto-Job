@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>AutoJob 브라우저 테스트 - 가짜 지원서</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 600px; margin: 40px auto; }
+  label { display: block; margin: 10px 0; }
+  #log { background: #f4f4f4; padding: 8px; white-space: pre-wrap; min-height: 2em; }
+  .posting { border: 1px solid #ddd; padding: 12px; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<div class="posting">
+  <strong>[테스트] 백엔드 신입 채용</strong>
+  <button type="button" id="start" onclick="log('지원 시작')">지원하기</button>
+</div>
+
+<h2>가짜 입사지원서</h2>
+<form id="f" onsubmit="event.preventDefault(); log('SUBMITTED')">
+  <label>이름 <input id="name"></label>
+  <label>이메일 <input id="email" value="already@filled.com"></label>
+  <label>입학년월 <input id="admit" placeholder="YYYY.MM"></label>
+  <label>주소 <input id="addr" readonly> <button type="button" id="addr-search" onclick="openAddr()">주소 검색</button></label>
+  <label>자기소개서 1 (최대 500자) <textarea id="q1" maxlength="500" rows="4" cols="60"></textarea></label>
+  <button type="button" id="save" onclick="log('임시저장됨')">임시저장</button>
+  <button type="button" id="leave" onclick="if (confirm('작성한 지원서를 최종 제출하시겠습니까?')) log('SUBMITTED-VIA-CONFIRM')">작성 확인</button>
+  <button type="submit" id="submit">최종 제출</button>
+</form>
+<div id="log"></div>
+
+<script>
+  function log(m) { document.getElementById('log').textContent += m + '\n'; }
+  function openAddr() {
+    const w = window.open('', 'addr', 'width=420,height=240');
+    w.document.write('<title>주소검색</title><button id="pick" onclick="opener.document.getElementById(\'addr\').value=\'서울특별시 중구 세종대로 110\'; window.close()">서울특별시 중구 세종대로 110</button>');
+  }
+</script>
+</body>
+</html>

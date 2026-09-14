@@ -1,0 +1,15 @@
+node_modules/
+
+# 개인 데이터 (절대 커밋 금지)
+profile/me/
+settings.yaml
+.env
+data/
+
+# 참고용 원본 저장소 (자체 .git 보유)
+reference/
+
+.DS_Store
+
+# 로컬 개발용 설정
+.claude/launch.json
