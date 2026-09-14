@@ -86,6 +86,22 @@ export class BrowserSession {
     await this.page.bringToFront();
   }
 
+  /** 검토하도록 창을 보여준다: 최소화되어 있으면 되돌리고 이 탭을 앞으로 */
+  async show(): Promise<void> {
+    const cdp = await this.context.newCDPSession(this.page).catch(() => null);
+    if (cdp) {
+      try {
+        const { windowId } = (await cdp.send('Browser.getWindowForTarget')) as { windowId: number };
+        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      } catch {
+        /* 창 조작을 지원하지 않는 브라우저는 앞으로 가져오기만 */
+      } finally {
+        await cdp.detach().catch(() => {});
+      }
+    }
+    await this.page.bringToFront().catch(() => {});
+  }
+
   /** CDP 연결만 끊는다. 브라우저 창은 사용자가 검토할 수 있게 남겨둔다. */
   async detach(opts: { closeTab?: boolean } = {}): Promise<void> {
     if (opts.closeTab) await this.page.close().catch(() => {});

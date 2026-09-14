@@ -29,7 +29,7 @@ test('AI 에게 주는 내 정보: 한글 라벨, 형식, 빈 값 표시, 목록
 });
 
 test('지시문: 기본 규칙 + 사용자가 추가한 규칙, 작업 지시에 회사와 파일', () => {
-  const sys = buildSystemPrompt({ ...settings, apply: { extra_rules: ['주소는 도로명으로', ' '], model: '' } });
+  const sys = buildSystemPrompt({ ...settings, apply: { ...settings.apply, extra_rules: ['주소는 도로명으로', ' '] } });
   assert.match(sys, /이미 입력된 값은 수정하거나 삭제하지 마세요/);
   assert.match(sys, /## 사용자가 추가한 규칙\n- 주소는 도로명으로$/);
   const prompt = buildPrompt({ company: '가사', link: 'https://x/apply' }, '### 기본정보\n- 이름: 홍길동', ['photo.jpg']);

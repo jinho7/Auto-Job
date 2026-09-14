@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
-import { applyNow, formatApplyReport, type ApplyStep } from './apply/run';
+import { applyNow, buildPageContent, formatApplyReport, type ApplyReport, type ApplyStep } from './apply/run';
+import { fillPageSections, setSubmitStatus } from './notion/page-fill';
 import { parseQuestionsText } from './essay/checks';
 import { formatEssays, writeEssays } from './essay/pipeline';
 import YAML from 'yaml';
@@ -291,6 +292,26 @@ notion
       return;
     }
     console.log(`✅ 추가했습니다${r.usedTemplate ? ' (DB 기본 템플릿 적용)' : ''}: ${r.url}`);
+  }));
+
+notion
+  .command('fill')
+  .description('지원서 작성 결과로 Notion 공고 페이지 본문을 채우고 제출 상태를 바꾼다 (이미 내용이 있는 섹션은 둠)')
+  .argument('<page>', 'Notion 공고 페이지 주소')
+  .argument('<run>', 'autojob apply 결과 폴더 (data/runs/…_apply-…)')
+  .option('--no-status', '제출 상태는 바꾸지 않는다')
+  .action(run(async (page: string, runDirPath: string, o: { status: boolean }) => {
+    const file = path.join(runDirPath, 'report.json');
+    if (!existsSync(file)) throw new Error(`${file} 이 없습니다`);
+    const report = JSON.parse(readFileSync(file, 'utf8')) as ApplyReport;
+    const id = parseNotionId(page);
+    if (!id) throw new Error('Notion 페이지 주소에서 ID 를 찾지 못했습니다');
+    const s = loadSettings();
+    const client = notionClient();
+    const content = buildPageContent({ essay: report.essay, formInfo: report.formInfo ?? null, role: report.role, uploads: report.actions.filter((a) => a.tool === 'upload' && a.ok).map((a) => a.value ?? '') });
+    const results = await fillPageSections(client, id, content, s.notion.section_map);
+    for (const r of results) console.log(`  ${r.status === 'filled' || r.status === 'added_heading' ? '📝 채움' : r.status === 'skipped_has_content' ? '⏭️  이미 내용이 있어 둠' : '·  넣을 내용 없음'}: ${r.title}`);
+    if (o.status) console.log(`  ${await setSubmitStatus(client, id, s)}`);
   }));
 
 notion

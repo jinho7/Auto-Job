@@ -74,6 +74,13 @@ notion:
     - 제출 자료 여부
   timezone_offset: "+09:00"    # 마감 시간의 시간대
   role_rules: {}               # 직무 태그 → 공고에 이 단어가 있으면 태그. 적지 않은 태그는 태그 이름의 단어로 판단
+  section_map:                 # 지원서 작성 후 채울 페이지 본문 제목 (내 템플릿의 제목과 같게)
+    procedure: 절차
+    company: 회사/조직 소개
+    role: 지원 직무
+    essays: 자기소개서 질문
+    projects: 프로젝트 및 동아리 작성 여부
+    documents: 제출 자료 여부
 
 # ─── 공고 수집 ────────────────────────────────────────────
 collect:
@@ -102,6 +109,14 @@ collect:
 apply:
   extra_rules: []              # 인적사항 입력 AI 에게 줄 추가 규칙 (기본 규칙: prompts/fill-basic-info.md)
   model: ""                    # 비우면 Claude Code 기본 모델
+  save_draft: true             # 다 쓰고 나서 임시저장 버튼을 누른다 (최종 제출은 절대 누르지 않음)
+  save_buttons:                # 임시저장 버튼 문구 (앞에 있는 것부터 찾음)
+    - 임시저장
+    - 임시 저장
+    - 중간저장
+    - 저장하기
+    - 저장
+  update_notion: true          # Notion 공고 페이지 본문을 채우고 제출 상태를 바꾼다
 
 # ─── 자기소개서 문체 ───────────────────────────────────────
 essay:

@@ -10,7 +10,9 @@ import { formatEssays, writeEssays, type EssayResult } from '../essay/pipeline';
 import type { CountUnit, EssayQuestion } from '../essay/types';
 import { runClaudeAgent, type AgentResult } from '../llm/claude-cli';
 import { propText } from '../notion/client';
+import { fillPageSections, setSubmitStatus, type PageContent, type SectionResult } from '../notion/page-fill';
 import { notionClient } from '../notion/setup';
+import { getSecret } from '../secrets';
 import { notify } from '../notify';
 import { DATA_HOME, paths, ROOT, runDir } from '../paths';
 import { checkProfile } from '../profile/check';
@@ -63,6 +65,13 @@ export type ApplyReport = {
   /** 인적사항 AI 가 finish 까지 마쳤는지 (인적사항 단계를 건너뛰었으면 true) */
   completed: boolean;
   essay?: EssayStepReport;
+  /** 문항 찾기 단계에서 기록한 지원서 구성, 직무명 (Notion 정리에 씀) */
+  formInfo?: { projects: string[]; documents: string[]; procedure: string[] } | null;
+  role?: string;
+  /** ⑤ 임시저장 */
+  save?: { ok: boolean; label?: string; message: string; dialogs: string[] };
+  /** ⑥ Notion 정리 */
+  notion?: { sections: SectionResult[]; status?: string; error?: string };
   dir: string;
   screenshot?: string;
 };
@@ -125,6 +134,32 @@ export function normalizeQuestions(raw: unknown[]): EssayQuestion[] {
     });
 }
 
+/** 지원서 작성 결과 → Notion 페이지 섹션 내용 */
+export function buildPageContent(x: {
+  essay?: EssayStepReport;
+  formInfo: { projects: string[]; documents: string[]; procedure: string[] } | null;
+  role?: string;
+  uploads: string[];
+}): PageContent {
+  const r = x.essay?.result?.research;
+  const procedure = x.formInfo?.procedure.length ? x.formInfo.procedure : (r?.procedure ?? []);
+  const unit = (q: EssayQuestion) => (q.unit === 'bytes' ? '바이트' : q.unit === 'chars_no_space' ? '자, 공백 제외' : '자');
+  return {
+    procedure,
+    company: r ? { summary: r.company_summary, values: r.values, recent: r.recent, sources: r.sources } : undefined,
+    role: x.role || r?.role ? { title: x.role, description: r?.role && r.role !== x.role ? r.role : undefined } : undefined,
+    essays: x.essay?.result
+      ? x.essay.questions.map((q) => ({
+          question: q.question,
+          answer: x.essay!.result!.answers.find((a) => a.id === q.id)?.text ?? '',
+          limit: q.maxChars ? `최대 ${q.maxChars}${unit(q)}` : undefined,
+        }))
+      : undefined,
+    projects: x.formInfo?.projects,
+    documents: [...(x.formInfo?.documents ?? []), ...x.uploads.map((u) => `올린 파일: ${u}`)],
+  };
+}
+
 export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const log = o.log ?? console.log;
   const steps: ApplyStep[] = o.steps?.length ? o.steps : ['basic', 'essay'];
@@ -152,6 +187,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const actions: ApplyReport['actions'] = [];
   let summary = '';
   let found: { role: string; questions: unknown[] } | null = null;
+  let formInfo: { projects: string[]; documents: string[]; procedure: string[] } | null = null;
   let bridge: Awaited<ReturnType<typeof startBridge>> | null = null;
   let agent: AgentResult = { text: '', isError: false, costUsd: 0 };
   let essay: EssayStepReport | undefined;
@@ -186,6 +222,8 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
           summary ||= e.summary;
         } else if (e.type === 'questions') {
           found = { role: e.role, questions: e.questions };
+        } else if (e.type === 'form_info') {
+          formInfo = { projects: e.projects, documents: e.documents, procedure: e.procedure };
         }
       },
     });
@@ -269,9 +307,47 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       }
     }
 
-    // 결과
+    // ⑤ 임시저장 — 코드 (설정의 저장 버튼 문구만, 제출 가드 적용)
+    let save: ApplyReport['save'];
+    if (settings.apply.save_draft && !agent.isError) {
+      log('⑤ 임시저장');
+      const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir);
+      try {
+        save = await tools.saveDraft(settings.apply.save_buttons);
+      } catch (e) {
+        save = { ok: false, message: (e as Error).message, dialogs: [] };
+      } finally {
+        await tools.close();
+      }
+      log(`   ${save.ok ? '💾' : '⚠️ '} ${save.message}${save.dialogs.length ? ` / 알림: ${save.dialogs.join(' / ')}` : ''}`);
+    }
+
+    // 결과 화면을 앞으로
+    await session.show();
     let screenshot: string | undefined = path.join(dir, 'screenshot.png');
     await session.screenshot(screenshot).catch(() => (screenshot = undefined));
+
+    // ⑥ Notion 정리 — 본문 섹션 채우기, 제출 상태 변경
+    let notionReport: ApplyReport['notion'];
+    if (settings.apply.update_notion && target.notionPageId && getSecret('NOTION_TOKEN')) {
+      log('⑥ Notion 페이지 정리');
+      notionReport = { sections: [] };
+      try {
+        const client = notionClient();
+        const content = buildPageContent({ essay, formInfo: formInfo as typeof formInfo, role: (found as { role: string } | null)?.role || target.role, uploads: actions.filter((a) => a.tool === 'upload' && a.ok).map((a) => a.value ?? '') });
+        notionReport.sections = await fillPageSections(client, target.notionPageId, content, settings.notion.section_map);
+        for (const r of notionReport.sections) if (r.status !== 'no_data') log(`   ${r.status === 'skipped_has_content' ? '⏭️  이미 내용이 있어 둠' : '📝 채움'}: ${r.title}`);
+        if (essay?.error || (steps.includes('basic') && agent.isError)) {
+          notionReport.status = '끝까지 마치지 못해 제출 상태는 바꾸지 않았습니다';
+        } else {
+          notionReport.status = await setSubmitStatus(client, target.notionPageId, settings);
+        }
+        log(`   ${notionReport.status}`);
+      } catch (e) {
+        notionReport.error = (e as Error).message;
+        log(`   ❌ Notion: ${notionReport.error}`);
+      }
+    }
     const report: ApplyReport = {
       company: target.company,
       link: target.link,
@@ -286,6 +362,10 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       agent,
       completed: steps.includes('basic') ? !!summary && !agent.isError : true,
       essay,
+      formInfo: formInfo as typeof formInfo,
+      role: (found as { role: string } | null)?.role || target.role,
+      save,
+      notion: notionReport,
       dir,
       screenshot,
     };
@@ -315,6 +395,8 @@ export function formatApplyReport(r: ApplyReport): string {
     e ? `- 자기소개서: ${e.error ? `실패 — ${e.error}` : `${e.filled.filter((f) => f.ok).length}/${e.questions.length}문항 입력`}` : null,
     r.agent.costUsd || e?.result?.costUsd ? `- AI 사용량: $${((r.agent.costUsd ?? 0) + (e?.result?.costUsd ?? 0)).toFixed(3)}` : null,
     e?.file ? `- 자기소개서 전문: ${e.file}` : null,
+    r.save ? `- 임시저장: ${r.save.ok ? `눌렀습니다 ("${r.save.label}")` : r.save.message}${r.save.dialogs.length ? ` — 알림: ${r.save.dialogs.join(' / ')}` : ''}` : null,
+    r.notion ? `- Notion: ${r.notion.error ? `실패 — ${r.notion.error}` : `${r.notion.sections.filter((x) => x.status === 'filled' || x.status === 'added_heading').map((x) => x.title).join(', ') || '채운 섹션 없음'}${r.notion.sections.some((x) => x.status === 'skipped_has_content') ? ` (이미 내용이 있어 둔 섹션: ${r.notion.sections.filter((x) => x.status === 'skipped_has_content').map((x) => x.title).join(', ')})` : ''} · ${r.notion.status ?? ''}`}` : null,
     r.screenshot ? `- 화면: ${r.screenshot}` : null,
     ...(r.steps.includes('basic') ? ['', '## 인적사항 요약', r.summary || '(없음)'] : []),
     '',

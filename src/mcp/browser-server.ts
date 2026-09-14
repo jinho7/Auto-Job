@@ -128,6 +128,19 @@ export async function main(): Promise<void> {
         return `문항 ${a.questions.length}개를 기록했습니다.`;
       },
     },
+    set_form_info: {
+      description: '지원서 구성 정보를 기록합니다 (문항 찾기 단계에서). projects: 프로젝트/동아리/활동 입력란이 있는지와 무엇이 들어 있는지, documents: 올려야 할 제출 서류(포트폴리오, 증명서 등)와 올렸는지, procedure: 페이지에 보이는 전형 절차.',
+      props: {
+        projects: { type: 'array', description: '예: ["프로젝트 입력란 있음 (최대 3개) — 1개 입력됨", "동아리 입력란 없음"]', items: { type: 'string' } },
+        documents: { type: 'array', description: '예: ["포트폴리오 (선택) — 올리지 않음", "증명사진 (필수) — 올림"]', items: { type: 'string' } },
+        procedure: { type: 'array', description: '예: ["서류전형", "코딩테스트", "1차 면접"]', items: { type: 'string' } },
+      },
+      run: async (a) => {
+        const list = (v: unknown) => (Array.isArray(v) ? v.map(String).filter((x) => x.trim()) : []);
+        await bridge.event({ type: 'form_info', projects: list(a.projects), documents: list(a.documents), procedure: list(a.procedure) });
+        return '기록했습니다.';
+      },
+    },
     finish: {
       description: '입력을 모두 마쳤을 때 호출합니다. 요약을 남기면 끝납니다.',
       props: { summary: { type: 'string', description: '무엇을 입력했는지 요약' } },

@@ -37,6 +37,14 @@ export const COMPANY_TYPE_SEEDS: Record<string, { companies: string[]; name_keyw
 
 /** 페이지 본문 기본 제목 (settings.yaml 에 없을 때) */
 export const DEFAULT_PAGE_SECTIONS = ['절차', '회사/조직 소개', '지원 직무', '자기소개서 질문', '프로젝트 및 동아리 작성 여부', '제출 자료 여부'];
+export const DEFAULT_SECTION_MAP = {
+  procedure: '절차',
+  company: '회사/조직 소개',
+  role: '지원 직무',
+  essays: '자기소개서 질문',
+  projects: '프로젝트 및 동아리 작성 여부',
+  documents: '제출 자료 여부',
+};
 
 export const settingsSchema = z.object({
   llm: z.object({
@@ -64,6 +72,17 @@ export const settingsSchema = z.object({
     timezone_offset: z.string().regex(/^[+-]\d{2}:\d{2}$/, '예: +09:00').default('+09:00'),
     /** 직무 태그 → 이 단어가 공고 제목/직무에 있으면 태그를 단다. 없는 태그는 태그 이름의 단어로 판단 */
     role_rules: z.record(z.string(), z.array(z.string())).default({}),
+    /** 지원서 작성 후 채울 페이지 본문 제목 (내용 종류 → 내 템플릿의 제목) */
+    section_map: z
+      .object({
+        procedure: z.string(),
+        company: z.string(),
+        role: z.string(),
+        essays: z.string(),
+        projects: z.string(),
+        documents: z.string(),
+      })
+      .default(DEFAULT_SECTION_MAP),
   }),
   collect: z.object({
     sources: z.record(z.string(), z.boolean()),
@@ -81,8 +100,14 @@ export const settingsSchema = z.object({
       extra_rules: z.array(z.string()).default([]),
       /** 비우면 Claude Code 기본 모델 */
       model: z.string().default(''),
+      /** 다 쓰고 나서 누를 임시저장 버튼 문구 (앞에 있는 것부터 찾음) */
+      save_buttons: z.array(z.string()).default(['임시저장', '임시 저장', '중간저장', '저장하기', '저장']),
+      /** 다 쓰고 나서 임시저장을 누를지 */
+      save_draft: z.boolean().default(true),
+      /** Notion 페이지 본문 정리와 제출 상태 변경을 할지 */
+      update_notion: z.boolean().default(true),
     })
-    .default({ extra_rules: [], model: '' }),
+    .default({ extra_rules: [], model: '', save_buttons: ['임시저장', '임시 저장', '중간저장', '저장하기', '저장'], save_draft: true, update_notion: true }),
   essay: z.object({
     tone: z.string(),
     subtitle: z.boolean(),

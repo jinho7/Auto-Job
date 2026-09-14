@@ -132,6 +132,34 @@ export class NotionClient {
     return r.results ?? [];
   }
 
+  /** 페이지(블록)의 자식 블록 전부 */
+  async listAllBlocks(blockId: string): Promise<NotionBlock[]> {
+    const out: NotionBlock[] = [];
+    let cursor: string | undefined;
+    do {
+      const r = await this.req<{ results: NotionBlock[]; has_more: boolean; next_cursor: string | null }>(
+        'GET',
+        `/blocks/${blockId}/children?page_size=100${cursor ? `&start_cursor=${cursor}` : ''}`,
+      );
+      out.push(...r.results);
+      cursor = r.has_more ? (r.next_cursor ?? undefined) : undefined;
+    } while (cursor && out.length < 2000);
+    return out;
+  }
+
+  /** 자식 블록 추가. afterBlockId 가 있으면 그 블록 바로 뒤에, 없으면 맨 끝에 (100개씩 나눠 보냄) */
+  async appendBlocks(parentId: string, children: unknown[], afterBlockId?: string): Promise<void> {
+    let after = afterBlockId;
+    for (let i = 0; i < children.length; i += 100) {
+      const chunk = children.slice(i, i + 100);
+      const r = await this.req<{ results: { id: string }[] }>('PATCH', `/blocks/${parentId}/children`, {
+        children: chunk,
+        ...(after ? { position: { type: 'after_block', after_block: { id: after } } } : {}),
+      });
+      if (after) after = r.results?.at(-1)?.id ?? after; // 다음 묶음은 방금 넣은 마지막 블록 뒤에
+    }
+  }
+
   /** 이 연결이 볼 수 있는 페이지 (새 DB 를 만들 위치 고르기용) */
   async searchPages(query = ''): Promise<{ id: string; title: string; url: string }[]> {
     const r = await this.req<{ results: NotionPage[] }>('POST', '/search', { query, filter: { property: 'object', value: 'page' }, page_size: 50 });
@@ -162,11 +190,19 @@ export type PropertyValue = {
   multi_select?: { name: string }[];
   status?: { name: string } | null;
 };
+export type NotionBlock = { id: string; type: string; has_children?: boolean } & Record<string, unknown>;
+
+/** 블록의 글자 (문단, 제목, 목록 등) */
+export function blockText(b: NotionBlock): string {
+  const body = b[b.type] as { rich_text?: RichText } | undefined;
+  return plain(body?.rich_text).trim();
+}
+
 export type NotionPage = {
   id: string;
   url: string;
   in_trash?: boolean;
-  parent?: { type: string };
+  parent?: { type: string; data_source_id?: string; database_id?: string };
   properties: Record<string, PropertyValue>;
 };
 

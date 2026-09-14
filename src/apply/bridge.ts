@@ -8,7 +8,8 @@ export type BridgeEvent =
   | { type: 'note'; text: string }
   | { type: 'action'; tool: string; label?: string; value?: string; ok: boolean; message: string }
   | { type: 'finish'; summary: string }
-  | { type: 'questions'; role: string; questions: unknown[] };
+  | { type: 'questions'; role: string; questions: unknown[] }
+  | { type: 'form_info'; projects: string[]; documents: string[]; procedure: string[] };
 
 export type BridgeHandlers = {
   ask: (question: string) => Promise<string>;

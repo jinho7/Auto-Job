@@ -433,6 +433,12 @@ function settingsPage(id) {
             '로그인·본인인증·CAPTCHA·약관 동의는 사용자에게 맡긴다'].map((r) => h('li', null, r))),
           h('p', { class: 'muted small' }, '전체 내용: prompts/fill-basic-info.md')),
         card('추가 규칙', chipEditor('apply.extra_rules', { placeholder: '예: 희망 연봉은 "회사 내규에 따름"을 고른다', emptyText: '(없음)' })),
+        card('다 쓰고 나서',
+          toggle('임시저장 버튼 누르기 (최종 제출은 절대 누르지 않음)', 'apply.save_draft'),
+          h('p', { class: 'muted small' }, '임시저장 버튼 문구 (앞에 있는 것부터 찾습니다. 제출 차단 가드도 그대로 적용됩니다)'),
+          chipEditor('apply.save_buttons', { placeholder: '예: 중간저장' }),
+          toggle('Notion 공고 페이지 본문 채우고 제출 상태 바꾸기', 'apply.update_notion'),
+          h('p', { class: 'muted small' }, '본문 제목과 바꿀 상태는 연결 → Notion 에서 정합니다. 이미 내용이 있는 섹션은 건드리지 않습니다.')),
         card('AI 모델', textSetting('모델', 'apply.model', { hint: '비우면 Claude Code 기본 모델. 예: claude-sonnet-5 (더 가볍고 빠름)' })),
         card('실행 방법', h('pre', { style: 'margin:0;white-space:pre-wrap' }, 'autojob apply <Notion 공고 페이지 주소 또는 지원 페이지 주소>'),
           h('p', { class: 'muted small' }, '브라우저가 열리면 로그인·본인인증을 직접 하고 인적사항 입력 화면까지 간 뒤 터미널에서 Enter 를 누르세요. 끝나면 비워둔 값과 참고사항을 알려줍니다. 제출은 하지 않습니다.')),
@@ -732,13 +738,19 @@ function notionPage() {
 
   const testCard = connected && s.notion.data_source_id ? card('6. 공고 1건 넣어보기', testPosting()) : null;
 
+  const SECTION_LABEL = { procedure: '전형 절차', company: '회사/조직 소개', role: '지원 직무', essays: '자기소개서 문항과 답변', projects: '프로젝트·동아리 입력란', documents: '제출 서류' };
+  const sectionCard = card('7. 지원서 작성 후 채울 본문 제목',
+    h('p', { class: 'muted small', style: 'margin-top:0' }, `autojob apply 가 끝나면 공고 페이지 본문에서 아래 제목을 찾아 그 아래에 내용을 넣고, 제출 상태를 "${s.notion.status_options.after_apply}"(으)로 바꿉니다. 내 템플릿의 제목과 같게 맞춰 주세요. 이미 내용이 있는 섹션은 건드리지 않습니다.`),
+    Object.entries(SECTION_LABEL).map(([k, label]) => textSetting(label, `notion.section_map.${k}`)),
+  );
+
   return page('Notion', '모은 공고를 정리할 Notion DB를 연결합니다.',
     card('1. 연결 토큰',
       h('ol', { class: 'steps' }, state.meta.setupSteps.map((step, i) => h('li', null, i === 0 ? h('span', null, h('a', { href: state.meta.integrationsUrl, target: '_blank', rel: 'noopener' }, 'Notion 통합 페이지'), '에서 "새 API 통합"을 만듭니다 (유형: 내부).') : step))),
       secretInput('NOTION_TOKEN', { onSaved: () => { notionReport = null; } }),
       connected ? h('div', { style: 'margin-top:10px' }, h('button', { class: 'btn', type: 'button', onclick: () => run(() => api('POST', '/api/notion/test'), (x) => x.info) }, '연결 확인')) : null,
     ),
-    dbCard, bootstrapCard, fields, options, pageMode, testCard,
+    dbCard, bootstrapCard, fields, options, pageMode, testCard, sectionCard,
   );
 }
 

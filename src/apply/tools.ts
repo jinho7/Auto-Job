@@ -265,6 +265,27 @@ export class ApplyTools {
     return this.record({ tool: 'upload', ref, value: path.basename(file), ok: true, message: `올렸습니다: ${path.basename(file)}` });
   }
 
+  /**
+   * 임시저장: 지원서 창에서 설정의 저장 버튼 문구(앞에 있는 것부터)와 같은 버튼을 찾아 누른다.
+   * 누를 때 click 과 같은 가드를 거치므로 "저장 후 제출" 같은 버튼은 막힌다. 뜬 알림창 글도 돌려준다.
+   */
+  async saveDraft(labels: string[]): Promise<{ ok: boolean; label?: string; message: string; dialogs: string[] }> {
+    this.active = this.main;
+    const n = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+    const buttons = (await snapshotFrames(this.main)).flatMap(({ controls }) => controls).filter((c) => c.kind === 'button' || c.kind === 'link');
+    for (const want of labels) {
+      const b = buttons.find((c) => n(c.label) === n(want));
+      if (!b) continue;
+      const before = this.log.length;
+      const message = await this.click(b.ref);
+      await this.main.waitForTimeout(1500);
+      const dialogs = this.log.slice(before).filter((l) => l.tool === 'dialog').map((l) => l.message);
+      const ok = this.log.slice(before).some((l) => l.tool === 'click' && l.ok);
+      return { ok, label: b.label, message, dialogs };
+    }
+    return { ok: false, message: `임시저장 버튼을 찾지 못했습니다 (찾은 문구: ${labels.join(', ')}). 직접 저장해 주세요.`, dialogs: [] };
+  }
+
   async wait(ms: number): Promise<string> {
     await this.page().waitForTimeout(Math.min(Math.max(ms, 100), 5000));
     return '기다렸습니다.';

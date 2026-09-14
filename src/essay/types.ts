@@ -20,6 +20,8 @@ export type Research = {
   values: string[];
   recent: string[];
   role: string;
+  /** 공고에서 확인한 전형 절차 (없으면 빈 목록) */
+  procedure?: string[];
   sources: string[];
 };
 
