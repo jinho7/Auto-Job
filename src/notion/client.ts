@@ -1,5 +1,5 @@
-// 최소한의 Notion API 클라이언트 (API 버전 2025-09-03: database 안에 data source 가 있는 구조)
-export const NOTION_VERSION = '2025-09-03';
+// 최소한의 Notion API 클라이언트 (API 버전 2026-03-11: database 안에 data source 가 있는 구조, 페이지 템플릿 지원)
+export const NOTION_VERSION = '2026-03-11';
 
 export class NotionError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -87,6 +87,110 @@ export class NotionClient {
     const first = db.data_sources?.[0];
     if (!first) throw new NotionError(404, 'no_data_source', '이 데이터베이스에 data source 가 없습니다');
     return this.getDataSource(first.id);
+  }
+
+  /** DB 의 모든 페이지 (휴지통 제외) */
+  async queryPages(dataSourceId: string, limit = 5000): Promise<NotionPage[]> {
+    const out: NotionPage[] = [];
+    let cursor: string | undefined;
+    do {
+      const r = await this.req<{ results: NotionPage[]; has_more: boolean; next_cursor: string | null }>('POST', `/data_sources/${dataSourceId}/query`, {
+        page_size: 100,
+        start_cursor: cursor,
+      });
+      out.push(...r.results.filter((p) => !p.in_trash));
+      cursor = r.has_more ? (r.next_cursor ?? undefined) : undefined;
+    } while (cursor && out.length < limit);
+    return out;
+  }
+
+  async listTemplates(dataSourceId: string): Promise<{ id: string; name: string; is_default: boolean }[]> {
+    const r = await this.req<{ templates: { id: string; name: string; is_default: boolean }[] }>('GET', `/data_sources/${dataSourceId}/templates`);
+    return r.templates ?? [];
+  }
+
+  async createPage(body: {
+    parent: { type: 'data_source_id'; data_source_id: string };
+    properties: Record<string, unknown>;
+    template?: { type: 'default' } | { type: 'template_id'; template_id: string; timezone?: string };
+    children?: unknown[];
+  }): Promise<{ id: string; url: string }> {
+    return this.req('POST', '/pages', body);
+  }
+
+  async updatePage(pageId: string, properties: Record<string, unknown>): Promise<void> {
+    await this.req('PATCH', `/pages/${pageId}`, { properties });
+  }
+
+  /** 페이지(블록)의 첫 몇 개 자식 블록 */
+  async listBlocks(blockId: string, pageSize = 10): Promise<{ id: string; type: string }[]> {
+    const r = await this.req<{ results: { id: string; type: string }[] }>('GET', `/blocks/${blockId}/children?page_size=${pageSize}`);
+    return r.results ?? [];
+  }
+
+  /** 이 연결이 볼 수 있는 페이지 (새 DB 를 만들 위치 고르기용) */
+  async searchPages(query = ''): Promise<{ id: string; title: string; url: string }[]> {
+    const r = await this.req<{ results: NotionPage[] }>('POST', '/search', { query, filter: { property: 'object', value: 'page' }, page_size: 50 });
+    return r.results
+      .filter((p) => p.parent?.type !== 'data_source_id' && p.parent?.type !== 'database_id') // DB 안의 행은 제외
+      .map((p) => ({ id: p.id, title: pageTitle(p) || '(제목 없음)', url: p.url }));
+  }
+
+  async createDatabase(parentPageId: string, title: string, properties: Record<string, unknown>): Promise<{ databaseId: string; dataSourceId: string; url: string }> {
+    const r = await this.req<{ id: string; url: string; data_sources?: { id: string }[] }>('POST', '/databases', {
+      parent: { type: 'page_id', page_id: parentPageId },
+      title: [{ type: 'text', text: { content: title } }],
+      initial_data_source: { properties },
+    });
+    const dataSourceId = r.data_sources?.[0]?.id;
+    if (!dataSourceId) throw new NotionError(500, 'no_data_source', 'DB는 만들었지만 data source ID를 받지 못했습니다');
+    return { databaseId: r.id, dataSourceId, url: r.url };
+  }
+}
+
+export type PropertyValue = {
+  type: string;
+  title?: RichText;
+  rich_text?: RichText;
+  url?: string | null;
+  date?: { start: string; end?: string | null } | null;
+  select?: { name: string } | null;
+  multi_select?: { name: string }[];
+  status?: { name: string } | null;
+};
+export type NotionPage = {
+  id: string;
+  url: string;
+  in_trash?: boolean;
+  parent?: { type: string };
+  properties: Record<string, PropertyValue>;
+};
+
+export function pageTitle(p: NotionPage): string {
+  const t = Object.values(p.properties ?? {}).find((v) => v.type === 'title');
+  return plain(t?.title);
+}
+
+/** 속성 값을 문자열 하나로 (중복 비교, 목록 표시용) */
+export function propText(v?: PropertyValue): string {
+  if (!v) return '';
+  switch (v.type) {
+    case 'title':
+      return plain(v.title);
+    case 'rich_text':
+      return plain(v.rich_text);
+    case 'url':
+      return v.url ?? '';
+    case 'date':
+      return v.date?.start ?? '';
+    case 'select':
+      return v.select?.name ?? '';
+    case 'status':
+      return v.status?.name ?? '';
+    case 'multi_select':
+      return (v.multi_select ?? []).map((o) => o.name).join(', ');
+    default:
+      return '';
   }
 }
 

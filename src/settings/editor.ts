@@ -1,4 +1,5 @@
 // `autojob settings`: 설정 대화형 편집기
+import { bootstrapDatabase } from '../notion/bootstrap';
 import { NotionClient } from '../notion/client';
 import { suggestedFixes, type MappingReport } from '../notion/mapping';
 import { applySuggestions, checkCurrent, INTEGRATIONS_URL, listDatabases, notionClient, selectDatabase, SETUP_STEPS } from '../notion/setup';
@@ -21,7 +22,13 @@ export const SOURCE_LABELS: Record<string, string> = {
 export const STANDARD_EMPLOYMENT = ['신입', '인턴', '채용연계형 인턴', '체험형 인턴', '계약직', '정규직'];
 
 export class SettingsEditor {
-  constructor(private readonly store: SettingsStore, private readonly p: Prompter, private readonly log = console.log) {}
+  constructor(
+    private readonly store: SettingsStore,
+    private readonly p: Prompter,
+    private readonly log = console.log,
+    /** 새 DB 의 직무 태그로 쓸 값 (내 정보의 희망 직무) */
+    private readonly rolesForBootstrap: () => string[] = () => [],
+  ) {}
 
   private ok(msg: string) {
     this.log(`  ✅ ${msg}`);
@@ -172,6 +179,8 @@ export class SettingsEditor {
           { name: '연결 확인', value: 'test' },
           { name: `공고를 정리할 DB 고르기  (${n.data_source_id || n.database_id || '미지정'})`, value: 'pick' },
           { name: 'DB 링크로 직접 지정', value: 'db' },
+          { name: 'DB 새로 만들기 (처음 쓰는 경우)', value: 'bootstrap' },
+          { name: `페이지 만들기 방식  (${n.use_db_template ? 'DB 기본 템플릿 우선' : '설정의 제목들'})`, value: 'pagemode' },
           { name: 'DB 속성 매칭 검사', value: 'check' },
           { name: 'DB 속성 이름 직접 맞추기', value: 'fields' },
           { name: '채용 분류 옵션 이름 맞추기', value: 'employment' },
@@ -189,6 +198,13 @@ export class SettingsEditor {
         });
       }
       if (pick === 'pick') await this.attempt(() => this.pickDatabase());
+      if (pick === 'bootstrap') await this.attempt(() => this.bootstrap());
+      if (pick === 'pagemode') {
+        const use = await this.p.confirm({ message: 'DB에 기본 템플릿이 있으면 그 템플릿으로 페이지를 만들까요?', default: n.use_db_template });
+        await this.attempt(() => this.store.set('notion.use_db_template', use));
+        this.log(`  템플릿이 없을 때 넣을 제목: ${this.store.settings.notion.page_sections.join(', ')}`);
+        if (await this.p.confirm({ message: '제목 목록을 편집할까요?', default: false })) await this.list('notion.page_sections', '페이지 제목');
+      }
       if (pick === 'check') await this.attempt(() => this.checkNotion());
       if (pick === 'db') {
         const text = await this.p.input({
@@ -254,6 +270,23 @@ export class SettingsEditor {
     const { ds, report } = await selectDatabase(this.store, id);
     this.ok(`선택: ${ds.title}`);
     await this.showMapping(report);
+  }
+
+  private async bootstrap(): Promise<void> {
+    const client = notionClient();
+    const pages = await client.searchPages();
+    if (!pages.length) {
+      this.log('  이 연결이 볼 수 있는 페이지가 없습니다. DB를 만들 페이지의 ••• → 연결에서 통합을 추가해 주세요.');
+      return;
+    }
+    const parent = await this.p.select({ message: 'DB를 만들 페이지', choices: [...pages.map((p) => ({ name: p.title, value: p.id })), { name: '◀ 취소', value: BACK }] });
+    if (parent === BACK) return;
+    const title = await this.p.input({ message: 'DB 제목', default: '서류 제출 자료' });
+    const roles = this.rolesForBootstrap();
+    this.log(`  직무 태그: ${roles.length ? roles.join(', ') : '(없음 — 나중에 Notion에서 추가)'}`);
+    if (!(await this.p.confirm({ message: '만들까요?', default: true }))) return;
+    const created = await bootstrapDatabase(client, this.store, parent, title, roles);
+    this.ok(`DB를 만들고 연결했습니다: ${created.url}`);
   }
 
   private async checkNotion(): Promise<void> {

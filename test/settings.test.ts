@@ -1,6 +1,6 @@
 import './setup-env';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { parseNotionId, SettingsStore } from '../src/settings/store';
 import { freshSettingsFile } from './helpers';
@@ -26,6 +26,16 @@ test('set/add/remove 는 주석을 보존하며 저장한다', () => {
   assert.equal(reloaded.browser.aside.cdp_port, 9333);
   assert.deepEqual(reloaded.collect.keywords, ['Spring Boot']);
   assert.match(readFileSync(file, 'utf8'), /driver: chrome +# aside \| chrome \| handoff/);
+});
+
+test('예전 설정 파일에 없는 목록에 추가해도 기본값을 잃지 않는다', () => {
+  const file = freshSettingsFile();
+  writeFileSync(file, readFileSync(file, 'utf8').replace(/  page_sections:\n(    - .*\n)+/, ''));
+  const store = new SettingsStore(file);
+  assert.equal(store.settings.notion.page_sections.length, 6); // 기본값
+  store.addToList('notion.page_sections', ['메모']);
+  assert.deepEqual(new SettingsStore(file).settings.notion.page_sections.slice(-2), ['제출 자료 여부', '메모']);
+  assert.equal(new SettingsStore(file).settings.notion.page_sections.length, 7);
 });
 
 test('형식에 맞지 않는 값은 저장하지 않는다', () => {

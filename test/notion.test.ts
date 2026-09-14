@@ -71,7 +71,7 @@ test('클라이언트: 토큰 확인, 버전 헤더, 에러 메시지', async ()
   const ok = new NotionClient('tok', fakeFetch({ 'GET /users/me': [200, { name: 'Auto-Job', bot: { workspace_name: '내 워크스페이스' } }] }, calls));
   assert.deepEqual(await ok.me(), { name: 'Auto-Job', workspace: '내 워크스페이스' });
   assert.equal(calls[0].headers.Authorization, 'Bearer tok');
-  assert.equal(calls[0].headers['Notion-Version'], '2025-09-03');
+  assert.equal(calls[0].headers['Notion-Version'], '2026-03-11');
 
   const bad = new NotionClient('tok', fakeFetch({ 'GET /users/me': [401, { code: 'unauthorized' }] }));
   await assert.rejects(bad.me(), (e) => e instanceof NotionError && e.status === 401 && /토큰이 올바르지/.test(e.message));

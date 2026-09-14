@@ -17,8 +17,10 @@ export class SettingsStore {
     return parseSettings(String(this.doc), this.file);
   }
 
+  /** 파일에 없는 키(새 버전에서 추가된 설정)는 기본값을 돌려준다 */
   get(p: string): unknown {
     const node = this.doc.getIn(split(p), true);
+    if (node === undefined) return split(p).reduce<unknown>((o, k) => (o == null ? undefined : (o as Record<string | number, unknown>)[k]), this.settings);
     return node && typeof node === 'object' && 'toJSON' in node ? (node as { toJSON(): unknown }).toJSON() : node;
   }
 

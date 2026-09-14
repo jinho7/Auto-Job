@@ -2,6 +2,7 @@
 import { getSecret } from '../secrets';
 import type { SettingsStore } from '../settings/store';
 import { NotionClient, type DataSource } from './client';
+import { NotionJobWriter } from './jobs';
 import { checkMapping, suggestedFixes, type MappingReport } from './mapping';
 
 export const INTEGRATIONS_URL = 'https://www.notion.so/profile/integrations';
@@ -40,6 +41,15 @@ export async function checkCurrent(store: SettingsStore, client = notionClient()
   if (!id) throw new Error('아직 DB를 고르지 않았습니다.');
   const ds = await client.resolveDataSource(id);
   return { ds, report: checkMapping(n, ds) };
+}
+
+/** 설정된 DB 로 공고를 올리는 도구를 만든다 */
+export async function jobWriter(store: SettingsStore, client = notionClient()): Promise<{ writer: NotionJobWriter; ds: DataSource }> {
+  const n = store.settings.notion;
+  const id = n.data_source_id || n.database_id;
+  if (!id) throw new Error('아직 공고를 정리할 DB를 고르지 않았습니다. 설정 → Notion 에서 골라 주세요.');
+  const ds = await client.resolveDataSource(id);
+  return { writer: new NotionJobWriter(client, store.settings, ds), ds };
 }
 
 /** 이름이 달라 매칭되지 않은 속성에 제안값을 적용한다 */

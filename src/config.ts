@@ -17,6 +17,9 @@ const guard = z.object({
 
 const companyType = z.object({ include: z.boolean(), priority: z.boolean() });
 
+/** 페이지 본문 기본 제목 (settings.yaml 에 없을 때) */
+export const DEFAULT_PAGE_SECTIONS = ['절차', '회사/조직 소개', '지원 직무', '자기소개서 질문', '프로젝트 및 동아리 작성 여부', '제출 자료 여부'];
+
 export const settingsSchema = z.object({
   llm: z.object({
     backend: z.enum(['claude-cli', 'codex-cli', 'anthropic-api', 'openai-api']),
@@ -38,6 +41,9 @@ export const settingsSchema = z.object({
       after_apply: z.string(),
     }),
     result_default: z.string(),
+    use_db_template: z.boolean().default(true),
+    page_sections: z.array(z.string()).default(DEFAULT_PAGE_SECTIONS),
+    timezone_offset: z.string().regex(/^[+-]\d{2}:\d{2}$/, '예: +09:00').default('+09:00'),
   }),
   collect: z.object({
     sources: z.record(z.string(), z.boolean()),

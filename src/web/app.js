@@ -505,14 +505,104 @@ function notionPage() {
     textSetting('합불 여부 기본값', 'notion.result_default'),
   );
 
+  const pageMode = card('5. 페이지 만들기',
+    toggle('DB에 기본 템플릿이 있으면 그 템플릿으로 페이지 만들기', 'notion.use_db_template'),
+    h('p', { class: 'muted small' }, '템플릿이 없을 때 페이지 본문에 넣을 제목 (지원서 작성 후 이 제목 아래에 내용을 채웁니다)'),
+    chipEditor('notion.page_sections', { placeholder: '제목 추가' }),
+    textSetting('마감 시간 시간대', 'notion.timezone_offset', { hint: '예: +09:00 (한국)' }),
+  );
+
+  const bootstrapBox = h('div');
+  const bootstrapCard = connected
+    ? card('새로 시작: DB 만들기',
+      h('p', { class: 'muted small', style: 'margin-top:0' }, '공고를 정리할 DB가 아직 없다면, 고른 페이지 아래에 같은 구조의 DB를 새로 만들고 바로 연결합니다. 직무 태그는 내 정보의 "희망 직무"로 만듭니다.'),
+      bootstrapBox)
+    : null;
+  const drawBootstrap = () => bootstrapBox.replaceChildren(h('button', { class: 'btn', type: 'button', onclick: async () => {
+    const { pages } = await run(() => api('GET', '/api/notion/pages'));
+    if (!pages.length) return bootstrapBox.replaceChildren(h('div', { class: 'notice' }, '이 연결이 볼 수 있는 페이지가 없습니다. DB를 만들 페이지의 ••• → 연결에서 통합을 추가해 주세요.'));
+    const sel = h('select', null, pages.map((p) => h('option', { value: p.id }, p.title)));
+    const title = h('input', { value: '서류 제출 자료', placeholder: 'DB 제목' });
+    bootstrapBox.replaceChildren(
+      h('div', { class: 'field' }, h('label', null, '만들 위치'), sel),
+      h('div', { class: 'field' }, h('label', null, 'DB 제목'), title),
+      h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+        if (!confirm(`"${sel.selectedOptions[0].text}" 페이지 아래에 DB를 만들까요?`)) return;
+        const r = await run(() => api('POST', '/api/notion/bootstrap', { parent: sel.value, title: title.value }), (x) => x.info);
+        notionReport = null;
+        render();
+        window.open(r.url, '_blank', 'noopener');
+      } }, 'DB 만들기'),
+    );
+  } }, '페이지 목록 불러오기'));
+  if (bootstrapCard) drawBootstrap();
+
+  const testCard = connected && s.notion.data_source_id ? card('6. 공고 1건 넣어보기', testPosting()) : null;
+
   return page('Notion', '모은 공고를 정리할 Notion DB를 연결합니다.',
     card('1. 연결 토큰',
       h('ol', { class: 'steps' }, state.meta.setupSteps.map((step, i) => h('li', null, i === 0 ? h('span', null, h('a', { href: state.meta.integrationsUrl, target: '_blank', rel: 'noopener' }, 'Notion 통합 페이지'), '에서 "새 API 통합"을 만듭니다 (유형: 내부).') : step))),
       secretInput('NOTION_TOKEN', { onSaved: () => { notionReport = null; } }),
       connected ? h('div', { style: 'margin-top:10px' }, h('button', { class: 'btn', type: 'button', onclick: () => run(() => api('POST', '/api/notion/test'), (x) => x.info) }, '연결 확인')) : null,
     ),
-    dbCard, fields, options,
+    dbCard, bootstrapCard, fields, options, pageMode, testCard,
   );
+}
+
+/** 수동으로 공고 1건을 넣어 Notion 연동을 확인하는 입력칸 */
+function testPosting() {
+  const box = h('div', null,
+    h('p', { class: 'muted small', style: 'margin-top:0' }, '중복이면 넣지 않습니다. 직무와 채용 분류는 DB에 이미 있는 옵션만 들어갑니다. 먼저 미리보기로 확인해 보세요.'),
+  );
+  const load = h('button', { class: 'btn', type: 'button', onclick: async () => {
+    const o = await run(() => api('GET', '/api/notion/options'));
+    const f = {
+      company: h('input', { placeholder: '회사명' }),
+      link: h('input', { placeholder: 'https://… 실제 지원 페이지' }),
+      deadline: h('input', { placeholder: '2026-09-30 18:00 또는 상시' }),
+      note: h('input', { placeholder: '특이 사항이 있을 때만' }),
+      companyType: h('select', null, h('option', { value: '' }, '— 모름 —'), o.companyTypes.map((t) => h('option', { value: t }, t))),
+    };
+    const checks = (values) => {
+      const wrap = h('div', { class: 'checks' }, values.map((v) => h('label', null, h('input', { type: 'checkbox', value: v }), v)));
+      wrap.picked = () => [...wrap.querySelectorAll('input:checked')].map((i) => i.value);
+      return wrap;
+    };
+    const roles = o.roles.length ? checks(o.roles) : h('span', { class: 'muted' }, 'DB에 직무 옵션이 없습니다');
+    const emp = checks(o.employment);
+    const out = h('div');
+    const send = async (dryRun) => {
+      const r = await run(() => api('POST', '/api/notion/add', {
+        dryRun,
+        posting: {
+          company: f.company.value, link: f.link.value, deadline: f.deadline.value, note: f.note.value,
+          companyType: f.companyType.value, roles: roles.picked ? roles.picked() : [], employment: emp.picked(),
+        },
+      }));
+      const lines = [];
+      if (r.status === 'duplicate') lines.push(h('div', { class: 'notice' }, `중복이라 넣지 않았습니다: ${r.duplicate.reason} — ${r.duplicate.existing.company}`, r.duplicate.existing.url ? h('div', null, h('a', { href: r.duplicate.existing.url, target: '_blank', rel: 'noopener' }, '기존 페이지 열기')) : null));
+      if (r.status === 'created') lines.push(h('div', { class: 'notice ok' }, `추가했습니다${r.usedTemplate ? ' (DB 기본 템플릿 적용)' : ''} `, h('a', { href: r.url, target: '_blank', rel: 'noopener' }, 'Notion에서 열기')));
+      if (r.status === 'dry-run') lines.push(h('div', { class: 'notice ok' }, `미리보기 — 본문: ${r.usedTemplate ? 'DB 기본 템플릿' : '설정의 제목들'}`), h('pre', { style: 'white-space:pre-wrap;font-size:12px;margin:8px 0 0' }, JSON.stringify(r.properties, null, 2)));
+      if (r.dropped?.length) lines.push(h('div', { class: 'notice' }, '빠진 값', h('ul', null, r.dropped.map((d) => h('li', null, d)))));
+      out.replaceChildren(...lines);
+    };
+    box.replaceChildren(
+      h('p', { class: 'muted small', style: 'margin-top:0' }, `대상 DB: ${o.title}`),
+      h('div', { class: 'field' }, h('label', null, '회사명'), f.company),
+      h('div', { class: 'field' }, h('label', null, '지원 링크'), f.link),
+      h('div', { class: 'field' }, h('label', null, '마감'), f.deadline),
+      h('div', { class: 'field' }, h('label', null, '직무'), roles),
+      h('div', { class: 'field' }, h('label', null, '채용 분류'), emp),
+      h('div', { class: 'field' }, h('label', null, '기업 구분'), f.companyType),
+      h('div', { class: 'field' }, h('label', null, '참고 키워드'), f.note),
+      h('div', { class: 'row', style: 'margin-top:8px' },
+        h('button', { class: 'btn', type: 'button', onclick: () => send(true) }, '미리보기'),
+        h('button', { class: 'btn primary', type: 'button', onclick: () => confirm('Notion DB에 추가할까요?') && send(false) }, 'Notion에 추가')),
+      out,
+    );
+  } }, '입력칸 열기');
+  box.append(load);
+  return box;
 }
 
 function drawReport(box, r) {

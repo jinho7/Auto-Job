@@ -121,6 +121,8 @@ button.btn.danger { color: var(--danger); }
 button.btn:disabled { opacity: 0.5; cursor: default; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row > input { flex: 1; min-width: 180px; }
+.row > input[type=checkbox], .row > input[type=radio], .row > input[type=file] { flex: none; min-width: 0; }
+label.row { flex-wrap: nowrap; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .chip {

@@ -5,15 +5,17 @@ import { BrowserSession } from '../browser/session';
 import { browserSelfTest } from '../browser/selftest';
 import { loadSettings } from '../config';
 import { NotionClient } from '../notion/client';
-import { FIELD_SPEC } from '../notion/mapping';
-import { applySuggestions, checkCurrent, INTEGRATIONS_URL, listDatabases, notionClient, selectDatabase, SETUP_STEPS } from '../notion/setup';
+import { parseDeadline, type JobPosting } from '../jobs/model';
+import { bootstrapDatabase } from '../notion/bootstrap';
+import { FIELD_SPEC, optionsOf } from '../notion/mapping';
+import { applySuggestions, checkCurrent, INTEGRATIONS_URL, jobWriter, listDatabases, notionClient, selectDatabase, SETUP_STEPS } from '../notion/setup';
 import { paths } from '../paths';
 import { checkProfile } from '../profile/check';
 import { loadSchema } from '../profile/schema';
 import { ProfileStore } from '../profile/store';
 import { SECRET_KEYS, secretStatus, setSecret, type SecretKey } from '../secrets';
 import { SOURCE_LABELS, STANDARD_EMPLOYMENT } from '../settings/editor';
-import { SettingsStore } from '../settings/store';
+import { parseNotionId, SettingsStore } from '../settings/store';
 
 const profileStore = () => new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema));
 const settingsStore = () => new SettingsStore(paths.settings);
@@ -118,6 +120,40 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
     const fixes = applySuggestions(store, report);
     const after = await checkCurrent(store);
     return { fixes, title: after.ds.title, report: after.report, ...state() };
+  },
+
+  /** 테스트 공고 입력칸에 쓸 DB 옵션 (직무, 채용 분류) */
+  'GET /api/notion/options': async () => {
+    const store = settingsStore();
+    const { ds } = await jobWriter(store);
+    const n = store.settings.notion;
+    const opts = (key: string) => optionsOf(ds.properties[n.fields[key] ?? '']);
+    return { title: ds.title, roles: opts('roles'), employment: Object.keys(n.employment_options), companyTypes: Object.keys(store.settings.company_types) };
+  },
+  'POST /api/notion/add': async (b) => {
+    const p = (b.posting ?? {}) as Record<string, unknown>;
+    const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+    const link = String(p.link ?? '').trim();
+    if (!link) throw new Error('실제 지원 페이지 링크가 필요합니다');
+    const posting: JobPosting = {
+      company: String(p.company ?? '').trim(),
+      link,
+      deadline: parseDeadline(String(p.deadline ?? '')),
+      roles: list(p.roles),
+      employment: list(p.employment),
+      companyType: p.companyType ? String(p.companyType) : undefined,
+      note: p.note ? String(p.note) : undefined,
+    };
+    const { writer } = await jobWriter(settingsStore());
+    return writer.add(posting, { dryRun: b.dryRun === true });
+  },
+  'GET /api/notion/pages': async () => ({ pages: await notionClient().searchPages() }),
+  'POST /api/notion/bootstrap': async (b) => {
+    const parent = parseNotionId(str(b, 'parent'));
+    if (!parent) throw new Error('페이지를 골라 주세요');
+    const roles = (profileStore().get('target.job_roles') as string[] | undefined) ?? [];
+    const created = await bootstrapDatabase(notionClient(), settingsStore(), parent, String(b.title || '서류 제출 자료'), roles);
+    return { info: `DB를 만들고 연결했습니다`, url: created.url, roles, ...state() };
   },
 
   // ── 브라우저 ──

@@ -5,6 +5,10 @@ import { BrowserSession } from './browser/session';
 import { browserSelfTest, formatSelfTest } from './browser/selftest';
 import { loadSettings } from './config';
 import { ensureInitialized } from './init';
+import { parseDeadline, type JobPosting } from './jobs/model';
+import { bootstrapDatabase } from './notion/bootstrap';
+import { checkCurrent, jobWriter, notionClient } from './notion/setup';
+import { parseNotionId } from './settings/store';
 import { openUrl } from './open';
 import { startServer } from './server/server';
 import { paths } from './paths';
@@ -168,7 +172,7 @@ profile
 const settings = program
   .command('settings')
   .description('설정 (인자 없이 실행하면 대화형 편집기)')
-  .action(run(() => new SettingsEditor(settingsStore(), inquirerPrompter).run()));
+  .action(run(() => new SettingsEditor(settingsStore(), inquirerPrompter, console.log, () => (profileStore().get('target.job_roles') as string[] | undefined) ?? []).run()));
 
 settings
   .command('show')
@@ -208,6 +212,96 @@ settings
   .action(run((p: string, values: string[]) => {
     const removed = settingsStore().removeFromList(p, values);
     console.log(removed.length ? `✅ 삭제: ${removed.join(', ')}` : '목록에 없는 값입니다');
+  }));
+
+// ─── notion ─────────────────────────────────────────────
+const notion = program.command('notion').description('Notion 연동 (토큰과 DB 는 autojob ui / autojob settings 에서 설정)');
+
+notion
+  .command('test')
+  .description('토큰으로 연결되는지 확인한다')
+  .action(run(async () => {
+    const me = await notionClient().me();
+    console.log(`✅ 연결됨: ${me.name}${me.workspace ? ` (워크스페이스: ${me.workspace})` : ''}`);
+  }));
+
+notion
+  .command('check')
+  .description('설정의 속성 이름과 옵션이 DB 와 맞는지 검사한다')
+  .action(run(async () => {
+    const { ds, report } = await checkCurrent(settingsStore());
+    console.log(`DB: ${ds.title}`);
+    for (const f of report.fields) console.log(`  ${f.ok ? '✅' : '❌'} ${f.label} → ${f.configured || '(없음)'}${f.problem ? `  — ${f.problem}` : ''}${f.suggestion ? `  (후보: ${f.suggestion})` : ''}`);
+    for (const o of report.optionProblems) console.log(`  ⚠️  ${o}`);
+    if (!report.ok) process.exitCode = 1;
+  }));
+
+notion
+  .command('list')
+  .description('DB 에 있는 공고를 보여준다')
+  .option('--limit <n>', '최대 개수', '30')
+  .action(run(async (opts: { limit: string }) => {
+    const { writer, ds } = await jobWriter(settingsStore());
+    const jobs = await writer.loadExisting();
+    const sorted = [...jobs].sort((a, b) => (a.deadline || '9999').localeCompare(b.deadline || '9999'));
+    console.log(`${ds.title}: ${jobs.length}건 (마감 가까운 순, 상시는 뒤)`);
+    for (const j of sorted.slice(0, Number(opts.limit))) console.log(`  ${(j.deadline.slice(0, 16) || '상시').padEnd(16)}  ${j.company}${j.link ? `  ${j.link}` : ''}`);
+  }));
+
+notion
+  .command('add')
+  .description('공고 1건을 DB 에 추가한다 (중복이면 넣지 않음)')
+  .requiredOption('--company <name>', '회사명')
+  .requiredOption('--link <url>', '실제 지원 페이지 (필수)')
+  .option('--deadline <text>', '마감 (예: 2026-09-30 18:00, 상시)', '상시')
+  .option('--roles <list>', '직무 태그, 쉼표로 (DB 에 있는 이름만 들어감)', '')
+  .option('--employment <list>', '채용 분류, 쉼표로: 정규직, 채용연계형인턴, 체험형인턴, 계약직', '')
+  .option('--type <companyType>', '기업 구분 (대기업, 유명IT, ...) — 작성중 표시 판단에 씀')
+  .option('--note <text>', '참고 키워드')
+  .option('--dry-run', 'Notion 에 쓰지 않고 넣을 값만 보여준다')
+  .action(run(async (o: { company: string; link: string; deadline: string; roles: string; employment: string; type?: string; note?: string; dryRun?: boolean }) => {
+    const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
+    const posting: JobPosting = {
+      company: o.company,
+      link: o.link,
+      deadline: parseDeadline(o.deadline),
+      roles: list(o.roles),
+      employment: list(o.employment),
+      companyType: o.type,
+      note: o.note,
+    };
+    const { writer } = await jobWriter(settingsStore());
+    const r = await writer.add(posting, { dryRun: o.dryRun });
+    if (r.status === 'duplicate') {
+      console.log(`⏭️  중복이라 넣지 않았습니다: ${r.duplicate.reason} — ${r.duplicate.existing.company} ${r.duplicate.existing.url ?? ''}`);
+      return;
+    }
+    for (const d of r.dropped) console.log(`  ⚠️  ${d}`);
+    if (r.status === 'dry-run') {
+      console.log(`미리보기 (본문: ${r.usedTemplate ? 'DB 기본 템플릿' : '설정의 제목들'})\n${JSON.stringify(r.properties, null, 2)}`);
+      return;
+    }
+    console.log(`✅ 추가했습니다${r.usedTemplate ? ' (DB 기본 템플릿 적용)' : ''}: ${r.url}`);
+  }));
+
+notion
+  .command('bootstrap')
+  .description('새 사용자용: 공고 정리 DB 를 새로 만들고 설정에 연결한다')
+  .option('--parent <page>', 'DB 를 만들 Notion 페이지 URL 또는 ID (생략하면 목록에서 고름)')
+  .option('--title <title>', 'DB 제목', '서류 제출 자료')
+  .action(run(async (o: { parent?: string; title: string }) => {
+    const client = notionClient();
+    let parent = o.parent ? parseNotionId(o.parent) : null;
+    if (o.parent && !parent) throw new Error('페이지 URL/ID 에서 Notion ID 를 찾지 못했습니다');
+    if (!parent) {
+      const pages = await client.searchPages();
+      if (!pages.length) throw new Error('이 연결이 볼 수 있는 페이지가 없습니다. DB 를 만들 페이지의 ••• → 연결에서 통합을 추가해 주세요.');
+      parent = await inquirerPrompter.select({ message: 'DB 를 만들 페이지', choices: pages.map((p) => ({ name: p.title, value: p.id })) });
+    }
+    const roles = (profileStore().get('target.job_roles') as string[] | undefined) ?? [];
+    const created = await bootstrapDatabase(client, settingsStore(), parent, o.title, roles);
+    console.log(`✅ DB 를 만들고 설정에 연결했습니다: ${created.url}`);
+    console.log(`   직무 태그: ${roles.length ? roles.join(', ') : '(없음 — 내 정보의 희망 직무를 채우거나 Notion 에서 직접 추가하세요)'}`);
   }));
 
 // ─── browser ────────────────────────────────────────────
