@@ -115,3 +115,23 @@ test('설정 편집기: 수집 사이트와 고용형태', async () => {
   assert.deepEqual(Object.entries(s.collect.sources).filter(([, v]) => v).map(([k]) => k), ['saramin', 'wanted']);
   assert.deepEqual(s.collect.employment_types, ['신입', '인턴', '전환형 인턴']);
 });
+
+test('처음 설치 마법사: 차례대로 묻고, 건너뛴 단계는 그대로 둔다', async () => {
+  const store = new SettingsStore(freshSettingsFile());
+  const p = scripted([
+    true, // 1 AI 연결
+    pick('Codex CLI'),
+    true, // 2 검색 키워드
+    pick('추가'),
+    '백엔드',
+    pick('◀ 뒤로'),
+    false, // 3 수집 사이트 건너뜀
+    false, // 4 Notion 건너뜀
+    false, // 5 브라우저 건너뜀
+  ]);
+  await new SettingsEditor(store, p, quiet).wizard();
+  assert.equal(store.settings.llm.backend, 'codex-cli');
+  assert.deepEqual(store.settings.collect.keywords, ['백엔드']);
+  assert.equal(p.remaining(), 0);
+  assert.equal(p.asked.filter((q) => q === '지금 설정할까요?').length, 5);
+});

@@ -9,6 +9,8 @@ import { COLLECTORS } from '../collectors';
 import { loadDutyGroups } from '../collectors/jasoseol';
 import { loadDutyCategories } from '../collectors/jobkorea';
 import { PoliteHttp } from '../http';
+import { runDoctor } from '../doctor';
+import { testAi } from '../llm';
 import { parseDeadline, type JobPosting } from '../jobs/model';
 import { OUTCOME_LABEL } from '../pipeline/collect';
 import { collectNow } from '../pipeline/run';
@@ -65,6 +67,8 @@ export function safeFileName(name: string): string {
 
 export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> = {
   'GET /api/state': () => state(),
+  'GET /api/doctor': async () => ({ checks: await runDoctor() }),
+  'POST /api/llm/test': async () => testAi(loadSettings()),
 
   // ── 내 정보 ──
   'POST /api/profile/set': (b) => {

@@ -8,7 +8,8 @@ import { loadSettings, type Settings } from '../config';
 import { parseLimit } from '../essay/checks';
 import { formatEssays, writeEssays, type EssayResult } from '../essay/pipeline';
 import type { CountUnit, EssayQuestion } from '../essay/types';
-import { runClaudeAgent, type AgentResult } from '../llm/claude-cli';
+import { agentFor, modelFor } from '../llm';
+import type { AgentResult } from '../llm/claude-cli';
 import { propText } from '../notion/client';
 import { fillPageSections, setSubmitStatus, type PageContent, type SectionResult } from '../notion/page-fill';
 import { notionClient } from '../notion/setup';
@@ -227,28 +228,19 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
         }
       },
     });
-    const mcpConfig = path.join(dir, 'mcp.json');
-    writeFileSync(
-      mcpConfig,
-      JSON.stringify({
-        mcpServers: {
-          autojob: {
-            // --mcp-config 서버는 기본적으로 뒤에서 연결되어 첫 턴에 도구가 없을 수 있다. alwaysLoad 는 연결을 기다린 뒤 시작한다.
-            alwaysLoad: true,
-            command: path.join(ROOT, 'node_modules', '.bin', 'tsx'),
-            args: [path.join(ROOT, 'src', 'mcp', 'browser-server.ts')],
-            env: { AUTOJOB_HOME: DATA_HOME, AUTOJOB_TARGET_ID: targetId, AUTOJOB_BRIDGE_URL: bridge.url, AUTOJOB_BRIDGE_TOKEN: bridge.token },
-          },
-        },
-      }),
-      { mode: 0o600 },
-    );
+    const runAgent = agentFor(settings);
+    const bridgeEnv = { AUTOJOB_BRIDGE_URL: bridge.url, AUTOJOB_BRIDGE_TOKEN: bridge.token };
     const browserAgent = (prompt: string, system: string) =>
-      runClaudeAgent({
+      runAgent({
         prompt,
         systemAppend: system,
-        mcp: { configPath: mcpConfig, server: 'autojob' },
-        model: settings.apply.model || undefined,
+        mcp: {
+          server: 'autojob',
+          command: path.join(ROOT, 'node_modules', '.bin', 'tsx'),
+          args: [path.join(ROOT, 'src', 'mcp', 'browser-server.ts')],
+          env: { AUTOJOB_HOME: DATA_HOME, AUTOJOB_TARGET_ID: targetId, ...bridgeEnv },
+        },
+        model: modelFor(settings, settings.apply.model),
         cwd: dir,
         onEvent: (e) => {
           if (e.type === 'text') log(`   💭 ${e.text.replace(/\s+/g, ' ').slice(0, 200)}`);

@@ -62,11 +62,11 @@ async function run(fn, okMsg) {
 // ─── 상태와 화면 전환 ───────────────────────────────────
 let state = null;
 let view = (() => {
-  try { return JSON.parse(localStorage.getItem('autojob-view')) || { type: 'profile', id: 'basic' }; } catch { return { type: 'profile', id: 'basic' }; }
+  try { return JSON.parse(localStorage.getItem('autojob-view')) || { type: 'settings', id: 'start' }; } catch { return { type: 'settings', id: 'start' }; }
 })();
 
 const SETTINGS_PAGES = [
-  ['실행', [['collect', '공고 수집']]],
+  ['실행', [['start', '시작하기'], ['collect', '공고 수집']]],
   ['검색 조건', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태'], ['roles', '직무 태그 규칙'], ['ai', 'AI 보강']]],
   ['기업 필터', [['companies', '기업 구분'], ['overrides', '회사 직접 지정']]],
   ['작성', [['apply', '지원서 입력 규칙'], ['essay', '자기소개서 문체']]],
@@ -364,6 +364,9 @@ function settingsPage(id) {
     case 'collect':
       return collectPage();
 
+    case 'start':
+      return startPage();
+
     case 'employment': {
       const cur = s.collect.employment_types;
       const all = [...new Set([...state.meta.employment, ...cur])];
@@ -455,14 +458,39 @@ function settingsPage(id) {
 
     case 'llm': {
       const keyFor = { 'anthropic-api': 'ANTHROPIC_API_KEY', 'openai-api': 'OPENAI_API_KEY' }[s.llm.backend];
-      return page('AI 연결', '공고 판단, 지원서 입력, 자기소개서 작성에 쓸 AI입니다.',
+      const HOW = {
+        'claude-cli': 'Claude Code 를 설치하고 터미널에서 claude 를 한 번 실행해 로그인하세요. Claude 구독(Pro/Max)을 씁니다.',
+        'codex-cli': 'Codex CLI 를 설치(npm i -g @openai/codex)하고 codex login 으로 로그인하세요. ChatGPT 구독을 씁니다. (실험적)',
+        'anthropic-api': 'console.anthropic.com 에서 API 키를 만들어 아래에 넣으세요. 쓴 만큼 요금이 나갑니다.',
+        'openai-api': 'platform.openai.com 에서 API 키를 만들어 아래에 넣으세요. 쓴 만큼 요금이 나갑니다.',
+      };
+      const DEFAULT_MODEL = { 'claude-cli': 'Claude Code 기본 모델', 'codex-cli': 'Codex 기본 모델', 'anthropic-api': 'claude-sonnet-5', 'openai-api': 'gpt-5' };
+      const result = h('div', { class: 'muted small', style: 'margin-top:8px' });
+      return page('AI 연결', '공고 판단, 지원서 입력, 자기소개서 작성에 쓸 AI입니다. 브라우저를 다루는 도구와 제출 차단은 어느 AI 를 써도 똑같이 적용됩니다.',
         card(null, radios('llm', 'llm.backend', [
           ['claude-cli', 'Claude Code (claude -p, 구독 사용)'],
           ['codex-cli', 'Codex CLI (codex exec, ChatGPT 구독 사용)'],
           ['anthropic-api', 'Anthropic API 키'],
           ['openai-api', 'OpenAI API 키'],
-        ])),
+        ]), h('p', { class: 'muted small' }, HOW[s.llm.backend])),
         keyFor ? card(state.secrets[keyFor].label, secretInput(keyFor)) : null,
+        card('모델',
+          textSetting('기본 모델', 'llm.model', { hint: `비우면 ${DEFAULT_MODEL[s.llm.backend]}. 기능별 모델(자기소개서, 지원서 입력, AI 보강)을 따로 적으면 그것을 먼저 씁니다. AI 연결 방식을 바꾸면 기능별 모델 이름도 그 방식에 맞게 바꿔 주세요.` })),
+        card('연결 확인',
+          h('p', { class: 'muted small', style: 'margin-top:0' }, 'AI 에게 짧은 질문을 보내 실제로 답하는지 봅니다 (로그인, API 키, 모델 이름 확인).'),
+          h('button', { class: 'btn', type: 'button', onclick: async (e) => {
+            e.target.disabled = true;
+            result.textContent = '확인 중… (길면 30초)';
+            try {
+              const r = await api('POST', '/api/llm/test');
+              result.textContent = `${r.ok ? '✅' : '❌'} ${r.message} (${(r.ms / 1000).toFixed(1)}초)`;
+            } catch (err) {
+              result.textContent = `❌ ${err.message}`;
+            } finally {
+              e.target.disabled = false;
+            }
+          } }, '연결 확인'),
+          result),
       );
     }
 
@@ -595,14 +623,14 @@ function aiPage() {
       toggle('AI 로 지원 페이지 찾기', 'collect.link_search.enabled'),
       textSetting('한 번에 찾을 최대 공고 수', 'collect.link_search.max_per_run', { type: 'number', hint: '수집 한 번에 AI 로 찾을 공고 수 상한 (사용량 제한)' }),
       textSetting('AI 한 번에 맡길 공고 수', 'collect.link_search.batch_size', { type: 'number', hint: '1~10' }),
-      textSetting('AI 모델', 'collect.link_search.model', { hint: '비우면 Claude Code 기본 모델' }),
+      textSetting('AI 모델', 'collect.link_search.model', { hint: '비우면 AI 연결의 기본 모델' }),
       h('p', { class: 'muted small' }, '지원 페이지로 인정하지 않을 사이트'),
       chipEditor('collect.link_search.reject_domains', { placeholder: '예: cafe.naver.com' }),
     ),
     card('직무 태그',
       h('p', { class: 'muted small', style: 'margin-top:0' }, '직무 태그 규칙으로 먼저 달고, 아래 설정에 따라 AI 가 Notion DB에 있는 태그 중에서만 고릅니다.'),
       radios('ai-roles', 'collect.ai_roles.mode', [['off', '규칙만 쓰기'], ['fill_empty', '규칙으로 못 단 공고만 AI'], ['review', '모든 공고를 AI 가 다시 보기']]),
-      textSetting('AI 모델', 'collect.ai_roles.model', { hint: '비우면 Claude Code 기본 모델' }),
+      textSetting('AI 모델', 'collect.ai_roles.model', { hint: '비우면 AI 연결의 기본 모델' }),
       toggle('직무 태그를 하나도 달지 못한 공고는 등록하지 않기', 'collect.require_role'),
     ),
   );
@@ -627,6 +655,30 @@ function rolesPage() {
   }
   return page('직무 태그 규칙', '공고 제목과 사이트의 직무명에 이 단어가 있으면 Notion 직무 태그를 답니다. 단어를 적지 않은 태그는 태그 이름의 단어로 판단합니다. 새 태그는 만들지 않습니다.',
     card(null, box));
+}
+
+// ─── 시작하기 ───────────────────────────────────────────
+function startPage() {
+  const box = h('div', null, h('p', { class: 'muted' }, '점검하는 중…'));
+  const MARK = { ok: ['ok', '완료'], warn: ['warn', '할 일'], bad: ['bad', '문제'] };
+  api('GET', '/api/doctor').then(({ checks }) => {
+    const todo = checks.filter((c) => c.status !== 'ok').length;
+    box.replaceChildren(
+      h('div', { class: `notice${todo ? '' : ' ok'}` }, todo ? `아래 ${todo}가지를 마치면 공고 수집과 지원서 작성을 쓸 수 있습니다.` : '모두 준비됐습니다. 실행 → 공고 수집에서 "미리보기"로 시작해 보세요.'),
+      card(null, h('table', { class: 'grid' },
+        h('tbody', null, checks.map((c) => h('tr', null,
+          h('td', { style: 'white-space:nowrap' }, h('span', { class: `badge ${MARK[c.status][0]}` }, MARK[c.status][1])),
+          h('td', null, h('strong', null, c.label), h('div', { class: 'muted small' }, c.detail)),
+          h('td', { style: 'white-space:nowrap' }, c.page && c.status !== 'ok' ? h('button', { class: 'btn', type: 'button', onclick: () => go(c.page[0], c.page[1]) }, '설정하러 가기') : null),
+        ))))),
+    );
+  }).catch((e) => box.replaceChildren(h('div', { class: 'notice bad' }, e.message)));
+  return page('시작하기', '처음 쓰는 순서: ① AI 연결 ② 내 정보 ③ 검색 키워드와 기업 구분 ④ Notion 연결 ⑤ 브라우저에서 채용 사이트 로그인 ⑥ 공고 수집 미리보기 → 등록 ⑦ 지원서 작성(autojob apply).',
+    box,
+    card('지원서 작성은 터미널에서',
+      h('p', { class: 'muted small', style: 'margin-top:0' }, '로그인·본인인증을 사람이 해야 해서 터미널에서 실행합니다. Notion 공고 페이지 주소를 넣으면 됩니다.'),
+      h('pre', { class: 'code' }, 'autojob apply "https://www.notion.so/…공고 페이지…"')),
+  );
 }
 
 // ─── 공고 수집 실행 ─────────────────────────────────────

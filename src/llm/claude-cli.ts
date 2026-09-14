@@ -1,6 +1,8 @@
 // Claude Code 를 헤드리스(claude -p)로 돌린다.
 // 내장 도구는 넘겨받은 것만(기본: 없음), MCP 는 넘겨받은 서버만 쓴다. 사용자의 다른 MCP 설정은 불러오지 않는다.
 import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 export type AgentEvent =
   | { type: 'tool'; name: string; input: Record<string, unknown> }
@@ -12,15 +14,32 @@ export type AgentRun = {
   systemAppend: string;
   /** 쓸 수 있는 내장 도구 (예: ['WebSearch', 'WebFetch']). 비우면 내장 도구 없음 */
   tools?: string[];
-  /** 쓸 MCP 서버 (설정 파일과 서버 이름) */
-  mcp?: { configPath: string; server: string };
+  /** 쓸 MCP 서버 (stdio 로 띄울 명령) */
+  mcp?: McpServerSpec;
   model?: string;
   cwd: string;
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
 };
 
+export type McpServerSpec = { server: string; command: string; args: string[]; env: Record<string, string> };
+
 export type AgentResult = { text: string; isError: boolean; costUsd?: number };
+
+/** 모든 AI 연결 방식이 같은 모양으로 부른다 (llm/index.ts) */
+export type RunAgent = (o: AgentRun) => Promise<AgentResult>;
+
+/** Claude Code 용 MCP 설정 파일 */
+export function writeClaudeMcpConfig(o: McpServerSpec, dir: string): string {
+  const file = path.join(dir, `mcp-${o.server}.json`);
+  writeFileSync(
+    file,
+    // --mcp-config 서버는 기본적으로 뒤에서 연결되어 첫 턴에 도구가 없을 수 있다. alwaysLoad 는 연결을 기다린 뒤 시작한다.
+    JSON.stringify({ mcpServers: { [o.server]: { alwaysLoad: true, command: o.command, args: o.args, env: o.env } } }),
+    { mode: 0o600 },
+  );
+  return file;
+}
 
 export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
   const tools = o.tools ?? [];
@@ -31,7 +50,7 @@ export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
     '--verbose',
     '--tools', tools.join(','), // "" 이면 내장 도구 전부 끔
     '--strict-mcp-config', // 사용자의 다른 MCP 서버는 불러오지 않는다
-    ...(o.mcp ? ['--mcp-config', o.mcp.configPath] : []),
+    ...(o.mcp ? ['--mcp-config', writeClaudeMcpConfig(o.mcp, o.cwd)] : []),
     ...(allowed.length ? ['--allowedTools', allowed.join(',')] : []),
     '--permission-mode', 'dontAsk', // 허용 목록에 없는 것은 묻지 않고 거절
     '--no-session-persistence',

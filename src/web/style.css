@@ -172,3 +172,4 @@ ul.result li { padding: 3px 0; }
 }
 #toast.show { opacity: 1; }
 #toast.bad { background: var(--danger); color: #fff; }
+pre.code { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); overflow-x: auto; font-size: 13px; }

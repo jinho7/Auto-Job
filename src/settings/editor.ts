@@ -73,6 +73,22 @@ export class SettingsEditor {
     }
   }
 
+  /** 처음 설치 마법사: 꼭 필요한 것만 차례대로 (건너뛰어도 나중에 `autojob settings` 나 설정 화면에서 할 수 있다) */
+  async wizard(): Promise<void> {
+    const steps: [string, string, () => Promise<void>][] = [
+      ['1/5', 'AI 연결 (공고 판단, 지원서 입력, 자기소개서에 쓸 AI)', () => this.llm()],
+      ['2/5', '검색 키워드', () => this.list('collect.keywords', '검색 키워드')],
+      ['3/5', '수집 사이트', () => this.sources()],
+      ['4/5', 'Notion (공고를 정리할 DB)', () => this.notion()],
+      ['5/5', '브라우저', () => this.browser()],
+    ];
+    for (const [n, title, fn] of steps) {
+      this.log(`\n── ${n} ${title} ──`);
+      if (!(await this.p.confirm({ message: '지금 설정할까요?', default: true }))) continue;
+      await fn();
+    }
+  }
+
   /** 문자열 목록 편집 (추가 / 삭제) */
   async list(p: string, label: string): Promise<void> {
     for (;;) {

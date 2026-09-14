@@ -3,7 +3,8 @@
 
 # ─── AI 연결 ─────────────────────────────────────────────
 llm:
-  backend: claude-cli          # claude-cli | codex-cli | anthropic-api | openai-api
+  backend: claude-cli          # claude-cli (Claude Code) | codex-cli (Codex CLI) | anthropic-api | openai-api
+  model: ""                    # 기본 모델. 비우면 방식별 기본. 기능별 모델(apply.model 등)이 있으면 그것을 먼저 씀
 
 # ─── 브라우저 ─────────────────────────────────────────────
 browser:
@@ -110,7 +111,7 @@ collect:
     job_group_ids: []          # 원티드 직군 번호. 비우면 전체 직군에서 검색 키워드로 거른다
   link_search:                 # 지원 페이지를 못 찾은 공고는 AI 가 웹 검색으로 찾는다 (못 찾으면 등록 안 함)
     enabled: true
-    model: ""                  # 비우면 Claude Code 기본 모델
+    model: ""                  # 비우면 AI 연결의 기본 모델
     max_per_run: 20            # 한 번 수집할 때 AI 로 찾을 최대 공고 수 (비용 제한)
     batch_size: 5              # AI 한 번에 맡길 공고 수
     reject_domains:            # 지원 페이지로 인정하지 않을 사이트
@@ -133,7 +134,7 @@ collect:
 # ─── 지원서 작성 ───────────────────────────────────────────
 apply:
   extra_rules: []              # 인적사항 입력 AI 에게 줄 추가 규칙 (기본 규칙: prompts/fill-basic-info.md)
-  model: ""                    # 비우면 Claude Code 기본 모델
+  model: ""                    # 비우면 AI 연결의 기본 모델
   save_draft: true             # 다 쓰고 나서 임시저장 버튼을 누른다 (최종 제출은 절대 누르지 않음)
   save_buttons:                # 임시저장 버튼 문구 (앞에 있는 것부터 찾음)
     - 임시저장
@@ -150,7 +151,7 @@ essay:
   forbid_middle_dot: false     # 단어 나열에 가운뎃점(·) 쓰지 않기
   blind: true                  # 블라인드 규정 지키기 (실명, 학교명, 특정 단체명 쓰지 않기)
   banned_phrases: []           # 쓰지 않을 표현 목록
-  model: ""                    # 자기소개서를 쓸 AI 모델. 비우면 Claude Code 기본 모델
+  model: ""                    # 자기소개서를 쓸 AI 모델. 비우면 AI 연결의 기본 모델
   max_revisions: 1             # 검토 후 고쳐 쓰기 최대 횟수 (0~3)
 
 # ─── 기업 구분 (자소설닷컴 달력 필터처럼 켜고 끄기) ─────────

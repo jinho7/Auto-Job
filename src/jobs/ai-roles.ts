@@ -3,7 +3,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Settings } from '../config';
-import { extractJson, runClaudeAgent } from '../llm/claude-cli';
+import { extractJson } from '../llm/claude-cli';
+import { agentFor, modelFor } from '../llm';
 import { paths } from '../paths';
 import type { RunAgent } from './find-link';
 
@@ -38,7 +39,7 @@ export async function tagRolesWithAi(
   qs: RoleQuery[],
   o: { settings: Settings; tags: string[]; cwd: string; runAgent?: RunAgent; log?: (m: string) => void },
 ): Promise<{ answers: RoleAnswer[]; costUsd: number; errors: string[] }> {
-  const run = o.runAgent ?? runClaudeAgent;
+  const run = o.runAgent ?? agentFor(o.settings);
   const system = readFileSync(path.join(paths.prompts, 'tag-roles.md'), 'utf8');
   const allowed = new Set(o.tags);
   const answers: RoleAnswer[] = [];
@@ -52,7 +53,7 @@ export async function tagRolesWithAi(
         prompt: `## 쓸 수 있는 직무 태그\n${tagListDoc(o.tags, o.settings.notion.role_rules)}\n\n## 공고\n${roleQueryDoc(batch)}`,
         systemAppend: system,
         tools: ['WebSearch', 'WebFetch'],
-        model: o.settings.collect.ai_roles.model || undefined,
+        model: modelFor(o.settings, o.settings.collect.ai_roles.model),
         cwd: o.cwd,
       });
       cost += r.costUsd ?? 0;

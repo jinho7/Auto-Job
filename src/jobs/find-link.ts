@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Settings } from '../config';
-import { extractJson, runClaudeAgent, type AgentRun } from '../llm/claude-cli';
+import { extractJson, type AgentRun } from '../llm/claude-cli';
+import { agentFor, modelFor } from '../llm';
 import { paths } from '../paths';
 
 export type LinkQuery = { key: string; company: string; title: string; deadline: string; sourceUrl: string; candidate?: string; reason?: string };
@@ -43,7 +44,7 @@ export async function findApplyLinks(
   o: { settings: Settings; cwd: string; runAgent?: RunAgent; log?: (m: string) => void },
 ): Promise<{ answers: LinkAnswer[]; costUsd: number }> {
   const cfg = o.settings.collect.link_search;
-  const run = o.runAgent ?? runClaudeAgent;
+  const run = o.runAgent ?? agentFor(o.settings);
   const system = readFileSync(path.join(paths.prompts, 'find-apply-link.md'), 'utf8');
   const answers: LinkAnswer[] = [];
   let cost = 0;
@@ -55,7 +56,7 @@ export async function findApplyLinks(
         prompt: `아래 공고들의 실제 지원 페이지를 찾아 주세요.\n\n${linkQueryDoc(batch)}`,
         systemAppend: system,
         tools: ['WebSearch', 'WebFetch'],
-        model: cfg.model || undefined,
+        model: modelFor(o.settings, cfg.model),
         cwd: o.cwd,
       });
       cost += r.costUsd ?? 0;

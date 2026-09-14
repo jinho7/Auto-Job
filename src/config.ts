@@ -52,6 +52,8 @@ export const DEFAULT_REJECT_DOMAINS = ['cafe.naver.com', 'blog.naver.com', 'tist
 export const settingsSchema = z.object({
   llm: z.object({
     backend: z.enum(['claude-cli', 'codex-cli', 'anthropic-api', 'openai-api']),
+    /** 기본 모델. 비우면 방식별 기본 (Claude Code / Codex 는 각자 기본, API 는 llm/index.ts 의 기본값) */
+    model: z.string().default(''),
   }),
   browser: z.object({
     driver: z.enum(['aside', 'chrome', 'handoff']),

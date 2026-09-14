@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Settings } from '../config';
-import { extractJson, runClaudeAgent, type AgentRun } from '../llm/claude-cli';
+import { extractJson, type AgentRun } from '../llm/claude-cli';
+import { agentFor, modelFor } from '../llm';
 import { paths } from '../paths';
 import { renderProfileForAgent } from '../apply/profile-doc';
 import type { ProfileSchema } from '../profile/schema';
@@ -65,12 +66,12 @@ const prompt = (name: string) => readFileSync(path.join(paths.prompts, name), 'u
 
 export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<EssayResult> {
   const log = d.log ?? (() => {});
-  const run = d.runAgent ?? runClaudeAgent;
+  const run = d.runAgent ?? agentFor(d.settings);
   const e = d.settings.essay;
   const blind = e.blind ? blindTermsFromProfile(d.profile as Record<string, any>) : [];
   const style = styleRules(e, blind);
   const profileDoc = renderProfileForAgent(d.profile, d.schema);
-  const model = e.model || undefined;
+  const model = modelFor(d.settings, e.model);
   let cost = 0;
   const agent = async (system: string, userPrompt: string, tools: string[]) => {
     const r = await run({ prompt: userPrompt, systemAppend: system, tools, model, cwd: d.cwd, onEvent: (ev) => ev.type === 'tool' && log(`   🔎 ${ev.name} ${String(ev.input.query ?? ev.input.url ?? '').slice(0, 80)}`) });

@@ -11,7 +11,9 @@ import { BrowserSession } from './browser/session';
 import { browserSelfTest, formatSelfTest } from './browser/selftest';
 import { loadSettings } from './config';
 import { COLLECTORS } from './collectors';
+import { formatDoctor, runDoctor } from './doctor';
 import { ensureInitialized } from './init';
+import { testAi } from './llm';
 import { notify } from './notify';
 import { formatReport } from './pipeline/collect';
 import { collectNow } from './pipeline/run';
@@ -57,20 +59,57 @@ const settingsStore = () => {
 // ─── init ───────────────────────────────────────────────
 program
   .command('init')
-  .description('처음 설치: 설정 파일과 내 정보 파일을 만든다 (이미 있으면 건드리지 않음)')
+  .description('처음 설치: 설정 파일과 내 정보 파일을 만들고, 설정을 차례대로 안내한다 (이미 있으면 건드리지 않음)')
+  .option('--no-wizard', '파일만 만들고 안내는 하지 않는다')
   .action(
-    run(() => {
+    run(async (o: { wizard: boolean }) => {
       const r = ensureInitialized();
-      console.log(r.settingsCreated ? '✅ settings.yaml 생성' : '· settings.yaml 이미 있음 (유지)');
-      console.log(r.profileCreated.length ? `✅ profile/me/ 생성: ${r.profileCreated.join(', ')}` : '· profile/me/ 이미 있음 (유지)');
-      console.log(
-        '\n다음 단계:\n' +
-          '  autojob ui                화면에서 설정과 내 정보를 한 번에 입력 (추천)\n' +
-          '  또는 터미널에서:\n' +
-          '  autojob settings          검색 키워드, 수집 사이트, 기업 구분, Notion 연결\n' +
-          '  autojob profile edit      내 정보 입력\n' +
-          '  autojob browser test      브라우저 연결과 제출 차단 확인',
-      );
+      console.log(r.settingsCreated ? `✅ 설정 파일 생성: ${paths.settings}` : '· 설정 파일 이미 있음 (유지)');
+      if (r.settingsCreated) console.log(r.browser ? `✅ 브라우저: ${r.browser}` : '⚠️  Aside 나 Chrome 을 찾지 못했습니다. 설치한 뒤 설정 → 브라우저에서 위치를 적어 주세요.');
+      console.log(r.profileCreated.length ? `✅ 내 정보 파일 생성: ${r.profileCreated.join(', ')}` : '· 내 정보 파일 이미 있음 (유지)');
+      if (!o.wizard || !process.stdin.isTTY) {
+        console.log('\n다음 단계: `autojob ui` (설정 화면) 또는 `autojob doctor` (준비 상태 점검)');
+        return;
+      }
+      const how = await inquirerPrompter.select({
+        message: '설정을 어떻게 할까요?',
+        choices: [
+          { name: '설정 화면에서 (추천) — 브라우저로 열립니다', value: 'ui' as const },
+          { name: '터미널에서 차례대로', value: 'terminal' as const },
+          { name: '나중에', value: 'later' as const },
+        ],
+      });
+      if (how === 'ui') {
+        const { url } = await startServer(4777);
+        console.log(`✅ 설정 화면: ${url}\n   "시작하기" 목록을 따라 하면 됩니다. 끝나면 Ctrl+C`);
+        openUrl(url);
+        await new Promise(() => {});
+      }
+      if (how === 'terminal') {
+        await new SettingsEditor(settingsStore(), inquirerPrompter, console.log, () => (profileStore().get('target.job_roles') as string[] | undefined) ?? []).wizard();
+        console.log('\n── 내 정보 ──\n지원서에 들어갈 정보입니다. 없는 값은 비워 두세요 (AI 가 추정해서 채우지 않습니다).');
+        if (await inquirerPrompter.confirm({ message: '지금 입력할까요?', default: true })) await new ProfileEditor(profileStore(), inquirerPrompter).run();
+      }
+      console.log(`\n${formatDoctor(await runDoctor())}`);
+    }),
+  );
+
+// ─── doctor ─────────────────────────────────────────────
+program
+  .command('doctor')
+  .description('준비 상태 점검: 내 정보, 검색 조건, Notion, 브라우저, AI 연결')
+  .option('--ai', 'AI 에게 짧은 질문을 보내 실제로 답하는지도 확인한다 (사용량이 조금 듭니다)')
+  .action(
+    run(async (o: { ai?: boolean }) => {
+      const checks = await runDoctor();
+      console.log(formatDoctor(checks));
+      if (o.ai && existsSync(paths.settings)) {
+        console.log('\nAI 연결 확인 중…');
+        const t = await testAi(loadSettings());
+        console.log(`${t.ok ? '✅' : '❌'} ${t.message} (${(t.ms / 1000).toFixed(1)}초)`);
+        if (!t.ok) process.exitCode = 1;
+      }
+      if (checks.some((c) => c.status === 'bad')) process.exitCode = 1;
     }),
   );
 
