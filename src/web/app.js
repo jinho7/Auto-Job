@@ -67,7 +67,7 @@ let view = (() => {
 
 const SETTINGS_PAGES = [
   ['실행', [['collect', '공고 수집']]],
-  ['검색 조건', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태'], ['roles', '직무 태그 규칙']]],
+  ['검색 조건', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태'], ['roles', '직무 태그 규칙'], ['ai', 'AI 보강']]],
   ['기업 필터', [['companies', '기업 구분'], ['overrides', '회사 직접 지정']]],
   ['작성', [['apply', '지원서 입력 규칙'], ['essay', '자기소개서 문체']]],
   ['연결', [['notion', 'Notion'], ['browser', '브라우저'], ['llm', 'AI 연결'], ['guard', '제출 차단 문구']]],
@@ -358,6 +358,9 @@ function settingsPage(id) {
     case 'roles':
       return rolesPage();
 
+    case 'ai':
+      return aiPage();
+
     case 'collect':
       return collectPage();
 
@@ -543,16 +546,65 @@ function sourcesPage() {
   );
   drawDuty();
 
+  const jobkoreaBox = h('div');
+  const drawJobkorea = () => jobkoreaBox.replaceChildren(
+    chipEditor('collect.jobkorea.duty_categories', { placeholder: '직무 대분류 이름', emptyText: '(비어 있음 — 전체 직무)' }),
+    h('button', { class: 'btn', type: 'button', style: 'margin-top:8px', onclick: async (e) => {
+      e.target.disabled = true;
+      e.target.textContent = '불러오는 중…';
+      try {
+        const { categories } = await run(() => api('GET', '/api/collect/jobkorea-duty-categories'));
+        const cur = new Set(state.settings.collect.jobkorea.duty_categories);
+        const list = h('div', { class: 'checks', style: 'margin-top:8px' }, categories.map((c) => h('label', null, h('input', { type: 'checkbox', value: c.name, checked: cur.has(c.name) }), c.name)));
+        jobkoreaBox.replaceChildren(list, h('div', { class: 'row', style: 'margin-top:8px' },
+          h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+            const picked = [...list.querySelectorAll('input:checked')].map((i) => i.value);
+            await setSetting('collect.jobkorea.duty_categories', picked, `직무 분류 ${picked.length}개 저장`);
+            drawJobkorea();
+          } }, '저장'),
+          h('button', { class: 'btn', type: 'button', onclick: drawJobkorea }, '취소')));
+      } catch {
+        drawJobkorea();
+      }
+    } }, '잡코리아 직무 분류 목록에서 고르기'),
+  );
+  drawJobkorea();
+
   return page('수집 사이트', '공고를 모을 사이트와 수집 방식을 정합니다. 모든 사이트는 robots.txt 가 허용하는 범위에서, 정직한 이름으로, 요청 사이에 간격을 두고 가져옵니다.',
     card(null, h('table', { class: 'grid' },
       h('thead', null, h('tr', null, h('th', { class: 'center' }, '사용'), h('th', null, '사이트'), h('th', null, '상태'), h('th', null, '설명'))),
       h('tbody', null, rows))),
     card('수집 범위',
       textSetting('마감 기간 (일)', 'collect.lookahead_days', { type: 'number', hint: '마감이 오늘부터 이 기간 안인 공고만 모읍니다. 상시 채용은 포함' }),
-      textSetting('키워드당 최대 공고 수', 'collect.max_per_keyword', { type: 'number', hint: '사람인 검색 결과를 이만큼까지 봅니다' }),
+      textSetting('키워드당 최대 공고 수', 'collect.max_per_keyword', { type: 'number', hint: '사이트마다 검색 결과를 키워드당 이만큼까지 봅니다' }),
       textSetting('요청 간격 (ms)', 'collect.request_delay_ms', { type: 'number', hint: '같은 사이트에 보내는 요청 사이 간격. 사이트에 부담을 주지 않도록 1500 이상을 권장합니다' }),
     ),
     card('자소설닷컴 직무 분류', h('p', { class: 'muted small', style: 'margin-top:0' }, '자소설닷컴 채용 달력에서 이 직무 분류의 공고만 가져옵니다.'), dutyBox),
+    card('잡코리아 직무 분류', h('p', { class: 'muted small', style: 'margin-top:0' }, '잡코리아 채용정보에서 이 직무 대분류의 공고만 가져옵니다. 비우면 전체 직무에서 검색 키워드로 찾습니다.'), jobkoreaBox),
+    card('원티드 직군',
+      h('p', { class: 'muted small', style: 'margin-top:0' }, '원티드 채용 목록 주소의 직군 번호입니다 (wanted.co.kr/wdlist/번호). 비우면 전체 직군에서 공고 제목에 검색 키워드가 있는 것만 모읍니다.'),
+      chipEditor('collect.wanted.job_group_ids', { placeholder: '직군 번호', emptyText: '(비어 있음)' })),
+  );
+}
+
+// ─── AI 보강 ────────────────────────────────────────────
+function aiPage() {
+  return page('AI 보강', '수집한 공고에서 코드로 채우지 못한 부분을 AI(Claude Code)가 웹 검색으로 채웁니다. AI 를 쓰면 시간과 사용량이 듭니다.',
+    card('지원 페이지 찾기',
+      h('p', { class: 'muted small', style: 'margin-top:0' }, '공고에 지원 링크가 없거나 링크가 열리지 않으면, AI 가 회사 채용 사이트에서 같은 공고를 찾습니다. 찾은 주소는 코드가 다시 열어 확인하고, 그래도 못 찾으면 등록하지 않습니다.'),
+      toggle('AI 로 지원 페이지 찾기', 'collect.link_search.enabled'),
+      textSetting('한 번에 찾을 최대 공고 수', 'collect.link_search.max_per_run', { type: 'number', hint: '수집 한 번에 AI 로 찾을 공고 수 상한 (사용량 제한)' }),
+      textSetting('AI 한 번에 맡길 공고 수', 'collect.link_search.batch_size', { type: 'number', hint: '1~10' }),
+      textSetting('AI 모델', 'collect.link_search.model', { hint: '비우면 Claude Code 기본 모델' }),
+      h('p', { class: 'muted small' }, '지원 페이지로 인정하지 않을 사이트'),
+      chipEditor('collect.link_search.reject_domains', { placeholder: '예: cafe.naver.com' }),
+    ),
+    card('직무 태그',
+      h('p', { class: 'muted small', style: 'margin-top:0' }, '직무 태그 규칙으로 먼저 달고, 아래 설정에 따라 AI 가 Notion DB에 있는 태그 중에서만 고릅니다.'),
+      radios('ai-roles', 'collect.ai_roles.mode', [['off', '규칙만 쓰기'], ['fill_empty', '규칙으로 못 단 공고만 AI'], ['review', '모든 공고를 AI 가 다시 보기']]),
+      textSetting('AI 모델', 'collect.ai_roles.model', { hint: '비우면 Claude Code 기본 모델' }),
+      toggle('직무 태그를 하나도 달지 못한 공고는 등록하지 않기', 'collect.require_role'),
+    ),
   );
 }
 
@@ -606,7 +658,7 @@ function collectPage() {
   };
 
   const warn = [];
-  if (!s.collect.keywords.length && !s.collect.jasoseol.duty_groups.length) warn.push('검색 키워드가 없습니다 (검색 조건 → 검색 키워드).');
+  if (!s.collect.keywords.length && !s.collect.jasoseol.duty_groups.length && !s.collect.jobkorea.duty_categories.length && !s.collect.wanted.job_group_ids.length) warn.push('검색 키워드가 없습니다 (검색 조건 → 검색 키워드).');
   if (!(state.secrets.NOTION_TOKEN.set && s.notion.data_source_id)) warn.push('Notion 이 연결되지 않아 미리보기만 할 수 있습니다.');
 
   return page('공고 수집', '켜 둔 사이트에서 공고를 모아 경력직, 고용형태, 마감, 기업 구분으로 거르고, 실제 지원 페이지를 확인한 뒤 Notion 에 등록합니다. 중복은 넣지 않습니다.',
@@ -631,7 +683,7 @@ function drawCollect(box, r) {
       h('thead', null, h('tr', null, h('th', null, '마감'), h('th', null, '회사 / 공고'), h('th', null, '구분 · 직무 · 분류'), h('th', null, '링크'))),
       h('tbody', null, xs.map((i) => h('tr', null,
         h('td', { style: 'white-space:nowrap' }, i.deadline),
-        h('td', null, h('strong', null, i.company), h('div', { class: 'muted small' }, i.title), i.reason ? h('div', { class: 'small', style: 'color:var(--warn)' }, i.reason) : null, ...(i.dropped || []).map((d) => h('div', { class: 'small', style: 'color:var(--warn)' }, d))),
+        h('td', null, h('strong', null, i.company), h('div', { class: 'muted small' }, i.title), i.found ? h('div', { class: 'small muted' }, `🔎 ${i.found}`) : null, i.reason ? h('div', { class: 'small', style: 'color:var(--warn)' }, i.reason) : null, ...(i.dropped || []).map((d) => h('div', { class: 'small', style: 'color:var(--warn)' }, d))),
         h('td', { class: 'small' }, [i.companyTypes?.join('/'), i.roles?.join(', '), i.employment?.join(', ')].filter(Boolean).join(' · ') || '—'),
         h('td', { class: 'small', style: 'white-space:nowrap' },
           i.notionUrl ? h('div', null, h('a', { href: i.notionUrl, target: '_blank', rel: 'noopener' }, 'Notion')) : null,
@@ -643,6 +695,9 @@ function drawCollect(box, r) {
     card(rep.dryRun ? '미리보기 결과' : '수집 결과',
       h('ul', { class: 'result' }, rep.sources.map((s) => h('li', null, `${s.error ? '❌' : '✅'} ${s.label}: ${s.error || `${s.count}건`}`))),
       h('div', { class: 'chips', style: 'margin-top:10px' }, Object.entries(rep.counts).map(([k, v]) => h('span', { class: 'chip', style: 'padding-right:10px' }, `${r.labels[k] || k} ${v}`))),
+      rep.ai && (rep.ai.linkSearched || rep.ai.rolesTagged || rep.ai.errors.length)
+        ? h('p', { class: 'small' }, `AI: 지원 페이지 ${rep.ai.linkSearched}건 중 ${rep.ai.linkFound}건 찾음 · 직무 태그 ${rep.ai.rolesTagged}건 보정${rep.ai.costUsd ? ` · $${rep.ai.costUsd.toFixed(2)}` : ''}${rep.ai.errors.length ? ` · ⚠️ ${rep.ai.errors.join(' / ')}` : ''}`)
+        : null,
       h('p', { class: 'muted small' }, `리포트 파일: ${r.dir}`)),
     section('registered', '✅ Notion 에 등록'),
     section('would_register', '📝 등록 대상'),
@@ -650,6 +705,7 @@ function drawCollect(box, r) {
     section('error', '❌ 오류'),
     section('duplicate', '⏭️ 이미 Notion 에 있음'),
     section('company', '🏢 기업 구분으로 뺀 공고'),
+    section('no_role', '🏷️ 직무 태그가 없어 뺀 공고'),
   ].filter(Boolean));
 }
 

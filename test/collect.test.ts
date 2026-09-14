@@ -12,6 +12,7 @@ import { classifyCompany, sizeHintFromText } from '../src/jobs/classify';
 import { matchRoles, tagTokens } from '../src/jobs/roles';
 import { SeenStore } from '../src/jobs/seen';
 import { paths } from '../src/paths';
+import type { RunAgent } from '../src/jobs/find-link';
 import { cleanCompanyName, employmentKeys, employmentMatches, runCollect, type NotionSink } from '../src/pipeline/collect';
 import { tempDir } from './helpers';
 
@@ -214,7 +215,8 @@ test('파이프라인: 필터, 합치기, 기업 구분, 지원 페이지, 직�
       return { status: 'created', pageId: 'p', url: `https://notion.so/${p.company}`, dropped: [], usedTemplate: false };
     },
   };
-  const r = await runCollect({ settings: s, http: okHttp, browserPage: async () => { throw new Error('브라우저 필요 없음'); }, seen, notion, dryRun: false, now: NOW, collectors: [fakeCollector(items)] });
+  const noAi: RunAgent = async () => ({ text: '```json\n{"results":[]}\n```', isError: false });
+  const r = await runCollect({ settings: s, http: okHttp, browserPage: async () => { throw new Error('브라우저 필요 없음'); }, seen, notion, dryRun: false, now: NOW, collectors: [fakeCollector(items)], runAgent: noAi });
 
   const by = Object.fromEntries(r.items.map((i) => [i.company, i.outcome]));
   assert.deepEqual(by, {
@@ -224,6 +226,106 @@ test('파이프라인: 필터, 합치기, 기업 구분, 지원 페이지, 직�
   assert.equal(r.counts.merged, 1);
   assert.deepEqual(added, ['가사|백엔드 (서버)|정규직|true', '상시사|AI,클라우드/인프라|정규직|false']);
   assert.equal(seen.get(SeenStore.key('fake', '가사'))?.status, 'registered');
+  assert.equal(seen.get(SeenStore.key('fake', '링크없는사'))?.status, 'no_link'); // AI 로도 못 찾음 → 기록
+});
+
+/** 가짜 AI: 지원 페이지 찾기와 직무 태그 요청을 구분해 정해진 답을 준다 */
+function fakeAgent(links: Record<string, string>, roles: Record<string, string[]>) {
+  const calls: { kind: string; prompt: string }[] = [];
+  const run: RunAgent = async (o) => {
+    const kind = /실제 지원 페이지/.test(o.systemAppend ?? '') ? 'link' : 'roles';
+    calls.push({ kind, prompt: o.prompt });
+    const keys = [...o.prompt.matchAll(/key: (\S+)/g)].map((m) => m[1]);
+    const results = kind === 'link'
+      ? keys.map((key) => ({ key, url: links[key] ?? '', note: links[key] ? '회사 채용 사이트' : '못 찾음' }))
+      : keys.map((key) => ({ key, roles: roles[key] ?? [] }));
+    return { text: `찾았습니다.\n\`\`\`json\n${JSON.stringify({ results })}\n\`\`\``, isError: false, costUsd: 0.01 };
+  };
+  return { run, calls };
+}
+
+test('파이프라인: 지원 페이지를 AI 가 찾고 코드가 다시 확인, 카페 링크는 인정 안 함, 이미 있는 공고는 찾지 않음', async () => {
+  const s: Settings = { ...base, collect: { ...base.collect, sources: { fake: true } } };
+  const items = [
+    raw({ company: '찾을사', applyUrl: undefined }),
+    raw({ company: '카페사', applyUrl: undefined }),
+    raw({ company: '깨진사', applyUrl: 'https://broken.example/x' }),
+    raw({ company: '이미있는사', applyUrl: undefined }),
+  ];
+  const http = new PoliteHttp(0, (async (url: string) => new Response('x', { status: url.includes('broken.example') ? 404 : 200 })) as typeof fetch, async () => {});
+  const ai = fakeAgent({ 'fake:찾을사': 'https://careers.find.example/jobs/1', 'fake:카페사': 'https://cafe.naver.com/jobs/1', 'fake:깨진사': 'https://careers.broken-fixed.example/2' }, {});
+  const notion: NotionSink = {
+    tags: [],
+    add: async (p) => ({ status: 'created', pageId: 'p', url: `https://notion.so/${p.company}`, dropped: [], usedTemplate: false }),
+    check: async (p) => (p.company === '이미있는사' ? { existing: { id: 'e', url: 'https://notion.so/e', company: p.company, link: '', deadline: '2026-09-30' }, reason: '같은 회사, 같은 마감일' } : null),
+  };
+  const r = await runCollect({ settings: s, http, browserPage: async () => { throw new Error('x'); }, seen: new SeenStore(path.join(tempDir(), 's.json')), notion, dryRun: false, now: NOW, collectors: [fakeCollector(items)], runAgent: ai.run });
+  const by = Object.fromEntries(r.items.map((i) => [i.company, i]));
+  assert.equal(by['찾을사'].outcome, 'registered');
+  assert.equal(by['찾을사'].applyUrl, 'https://careers.find.example/jobs/1');
+  assert.match(by['찾을사'].found ?? '', /AI 검색/);
+  assert.equal(by['카페사'].outcome, 'no_link');
+  assert.match(by['카페사'].reason ?? '', /cafe\.naver\.com/);
+  assert.equal(by['깨진사'].outcome, 'registered'); // 원래 링크가 404 → AI 가 찾은 링크
+  assert.equal(by['이미있는사'].outcome, 'duplicate');
+  assert.equal(ai.calls.length, 1);
+  assert.doesNotMatch(ai.calls[0].prompt, /이미있는사/);
+  assert.match(ai.calls[0].prompt, /확인 실패한 링크: https:\/\/broken\.example\/x/);
+  assert.deepEqual({ searched: r.ai.linkSearched, found: r.ai.linkFound }, { searched: 3, found: 2 });
+});
+
+test('파이프라인: AI 검색 한도를 넘으면 찾지 않고, 꺼 두면 AI 를 부르지 않는다', async () => {
+  const items = [raw({ company: '가사', applyUrl: undefined }), raw({ company: '나사', applyUrl: undefined, deadline: { date: '2026-09-29' } })];
+  const ai = fakeAgent({ 'fake:가사': 'https://careers.ga.example/1' }, {});
+  const limited: Settings = { ...base, collect: { ...base.collect, sources: { fake: true }, link_search: { ...base.collect.link_search, max_per_run: 1 } } };
+  const r = await runCollect({ settings: limited, http: okHttp, browserPage: async () => { throw new Error('x'); }, seen: new SeenStore(path.join(tempDir(), 's.json')), notion: null, dryRun: true, now: NOW, collectors: [fakeCollector(items)], runAgent: ai.run });
+  assert.deepEqual(r.items.map((i) => [i.company, i.outcome]), [['나사', 'no_link'], ['가사', 'would_register']]);
+  assert.match(r.items[0].reason ?? '', /한도/);
+
+  const off: Settings = { ...base, collect: { ...base.collect, sources: { fake: true }, link_search: { ...base.collect.link_search, enabled: false } } };
+  const ai2 = fakeAgent({}, {});
+  const r2 = await runCollect({ settings: off, http: okHttp, browserPage: async () => { throw new Error('x'); }, seen: new SeenStore(path.join(tempDir(), 's.json')), notion: null, dryRun: true, now: NOW, collectors: [fakeCollector(items)], runAgent: ai2.run });
+  assert.equal(r2.counts.no_link, 2);
+  assert.equal(ai2.calls.length, 0);
+});
+
+test('파이프라인: AI 직무 태그 (규칙으로 못 단 공고만 / 다시 보기 / 없는 태그는 버림 / 태그 없으면 빼기)', async () => {
+  const tags = ['백엔드 (서버)', 'AI', '데이터'];
+  const items = [raw({ company: '규칙사', title: '백엔드 신입' }), raw({ company: '애매사', title: '2026 신입 공채', deadline: { date: '2026-09-29' } }), raw({ company: '모름사', title: '신입 공채', deadline: { date: '2026-09-28' } })];
+  const notion = (): NotionSink & { added: string[] } => {
+    const added: string[] = [];
+    return { tags, added, add: async (p) => (added.push(`${p.company}:${p.roles.join(',')}`), { status: 'created', pageId: 'p', url: 'u', dropped: [], usedTemplate: false }) };
+  };
+  const answers = { 'fake:규칙사': ['백엔드 (서버)', 'AI'], 'fake:애매사': ['데이터', '없는 태그'], 'fake:모름사': [] };
+  const go = async (mode: 'off' | 'fill_empty' | 'review', requireRole = false) => {
+    const s: Settings = { ...base, collect: { ...base.collect, sources: { fake: true }, ai_roles: { mode, model: '' }, require_role: requireRole } };
+    const ai = fakeAgent({}, answers);
+    const n = notion();
+    const r = await runCollect({ settings: s, http: okHttp, browserPage: async () => { throw new Error('x'); }, seen: new SeenStore(path.join(tempDir(), 's.json')), notion: n, dryRun: false, now: NOW, collectors: [fakeCollector(items)], runAgent: ai.run });
+    return { added: n.added, calls: ai.calls, r };
+  };
+  const fill = await go('fill_empty');
+  assert.deepEqual(fill.added, ['규칙사:백엔드 (서버)', '애매사:데이터', '모름사:']);
+  assert.doesNotMatch(fill.calls[0].prompt, /규칙사/); // 규칙으로 단 공고는 AI 에게 안 보냄
+  const review = await go('review');
+  assert.deepEqual(review.added, ['규칙사:백엔드 (서버),AI', '애매사:데이터', '모름사:']);
+  assert.match(review.calls[0].prompt, /규칙으로 단 태그: 백엔드 \(서버\)/);
+  const off = await go('off');
+  assert.equal(off.calls.length, 0);
+  assert.deepEqual(off.added, ['규칙사:백엔드 (서버)', '애매사:', '모름사:']);
+  const strict = await go('fill_empty', true);
+  assert.deepEqual(strict.added, ['규칙사:백엔드 (서버)', '애매사:데이터']);
+  assert.equal(strict.r.counts.no_role, 1);
+});
+
+test('기록: 지원 페이지를 못 찾은 공고는 7일 뒤 다시 확인한다', () => {
+  const seen = new SeenStore(path.join(tempDir(), 's.json'));
+  seen.mark('fake:a', { status: 'no_link', company: 'a', title: '' });
+  seen.mark('fake:b', { status: 'registered', company: 'b', title: '' });
+  const later = new Date(Date.now() + 8 * 86_400_000);
+  assert.ok(seen.skip('fake:a'));
+  assert.equal(seen.skip('fake:a', later), undefined);
+  assert.ok(seen.skip('fake:b', later));
 });
 
 test('파이프라인: 미리보기는 기록을 남기지 않고, Notion 이 없어도 돈다', async () => {

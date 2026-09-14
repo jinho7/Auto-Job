@@ -5,6 +5,7 @@ import type { Page } from 'playwright-core';
 import { BrowserSession } from '../browser/session';
 import { loadSettings } from '../config';
 import { PoliteHttp } from '../http';
+import { findDuplicate } from '../jobs/dedup';
 import { SeenStore } from '../jobs/seen';
 import { optionsOf } from '../notion/mapping';
 import { jobWriter } from '../notion/setup';
@@ -18,7 +19,8 @@ export type CollectRunOptions = { dryRun: boolean; sources?: string[]; limit?: n
 export async function collectNow(opts: CollectRunOptions): Promise<{ report: CollectReport; dir: string }> {
   const log = opts.log ?? console.log;
   const settings = loadSettings();
-  if (!settings.collect.keywords.length && !settings.collect.jasoseol.duty_groups.length) {
+  const c = settings.collect;
+  if (!c.keywords.length && !c.jasoseol.duty_groups.length && !c.jobkorea.duty_categories.length && !c.wanted.job_group_ids.length) {
     throw new Error('검색 키워드가 없습니다. 설정 → 검색 키워드에서 추가해 주세요.');
   }
 
@@ -34,12 +36,18 @@ export async function collectNow(opts: CollectRunOptions): Promise<{ report: Col
   const n = settings.notion;
   if (getSecret('NOTION_TOKEN') && (n.data_source_id || n.database_id)) {
     const { writer, ds } = await jobWriter(new SettingsStore(paths.settings));
-    notion = { tags: optionsOf(ds.properties[n.fields.roles ?? '']), add: (p, o) => writer.add(p, o) };
+    notion = {
+      tags: optionsOf(ds.properties[n.fields.roles ?? '']),
+      add: (p, o) => writer.add(p, o),
+      check: async (p) => findDuplicate(p, await writer.loadExisting()),
+    };
     log(`Notion: ${ds.title} (직무 태그 ${notion.tags.length}개)`);
   } else {
     log('Notion 이 연결되지 않아 미리보기만 합니다 (중복 확인도 로컬 기록만).');
   }
 
+  const dir = runDir(opts.dryRun || !notion ? 'collect-preview' : 'collect');
+  mkdirSync(dir, { recursive: true });
   try {
     const report = await runCollect({
       settings,
@@ -51,10 +59,9 @@ export async function collectNow(opts: CollectRunOptions): Promise<{ report: Col
       dryRun: opts.dryRun || !notion,
       sources: opts.sources,
       limit: opts.limit,
+      cwd: dir,
       log,
     });
-    const dir = runDir(opts.dryRun || !notion ? 'collect-preview' : 'collect');
-    mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 1));
     writeFileSync(path.join(dir, 'report.txt'), formatReport(report, { verbose: true }));
     return { report, dir };

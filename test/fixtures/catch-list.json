@@ -1,0 +1,5 @@
+{"recruitData":[
+ {"RecruitID":571001,"RecruitTitle":"로봇 백엔드 개발 엔지니어 신입/경력 채용","CompName":"가나다로보틱스","ApplyEndDatetime":"2026-10-05T14:59:59.000Z","ApplyEndCode":"","CareerGubunCode":"신입/경력","GubunCode":"정규직/인턴","Depth":"웹개발, 응용프로그램개발","AssignedTaskNameListString":"로봇 백엔드 개발 엔지니어","PopularCategory":"중견기업","WorkArea":"경기"},
+ {"RecruitID":571002,"RecruitTitle":"데이터 엔지니어 경력 채용","CompName":"라마바뱅크","ApplyEndDatetime":"2026-09-21T09:00:00.000Z","ApplyEndCode":"채용시 마감","CareerGubunCode":"경력","GubunCode":"정규직","Depth":"데이터엔지니어","AssignedTaskNameListString":null,"PopularCategory":"매출액 1조 클럽","WorkArea":"서울"},
+ {"RecruitID":571003,"RecruitTitle":"교육생 모집","CompName":"사아자스쿨","ApplyEndDatetime":"2026-09-30T14:59:59.000Z","ApplyEndCode":"","CareerGubunCode":"경력무관","GubunCode":"교육생","Depth":null,"AssignedTaskNameListString":null,"PopularCategory":"핫스타트업","WorkArea":"서울"}
+],"intTotalRecordCount":3}

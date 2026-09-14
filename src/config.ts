@@ -46,6 +46,9 @@ export const DEFAULT_SECTION_MAP = {
   documents: '제출 자료 여부',
 };
 
+/** 지원 페이지로 인정하지 않는 사이트 기본 목록 (커뮤니티, 블로그, 검색 결과) */
+export const DEFAULT_REJECT_DOMAINS = ['cafe.naver.com', 'blog.naver.com', 'tistory.com', 'velog.io', 'brunch.co.kr', 'dcinside.com', 'instagram.com', 'facebook.com', 'youtube.com', 'google.com', 'namu.wiki'];
+
 export const settingsSchema = z.object({
   llm: z.object({
     backend: z.enum(['claude-cli', 'codex-cli', 'anthropic-api', 'openai-api']),
@@ -93,6 +96,29 @@ export const settingsSchema = z.object({
     max_per_keyword: z.number().int().min(1).max(500).default(100),
     request_delay_ms: z.number().int().min(500).max(30_000).default(1500),
     jasoseol: z.object({ duty_groups: z.array(z.string()).default([]) }).default({ duty_groups: [] }),
+    /** 잡코리아 직무 대분류 이름 (비우면 검색 키워드만으로 거른다) */
+    jobkorea: z.object({ duty_categories: z.array(z.string()).default([]) }).default({ duty_categories: [] }),
+    /** 원티드 직군 번호 (비우면 전체 직군에서 검색 키워드로 거른다) */
+    wanted: z.object({ job_group_ids: z.array(z.coerce.number().int()).default([]) }).default({ job_group_ids: [] }),
+    /** 지원 페이지를 못 찾은 공고를 AI 가 웹에서 찾는다 */
+    link_search: z
+      .object({
+        enabled: z.boolean().default(true),
+        model: z.string().default(''),
+        /** 한 번 수집할 때 AI 로 찾을 최대 공고 수 (비용 제한) */
+        max_per_run: z.number().int().min(0).max(200).default(20),
+        /** AI 한 번에 맡길 공고 수 */
+        batch_size: z.number().int().min(1).max(10).default(5),
+        /** 지원 페이지로 인정하지 않을 사이트 (카페, 블로그 …) */
+        reject_domains: z.array(z.string()).default(DEFAULT_REJECT_DOMAINS),
+      })
+      .default({ enabled: true, model: '', max_per_run: 20, batch_size: 5, reject_domains: DEFAULT_REJECT_DOMAINS }),
+    /** AI 직무 태그: off(규칙만) / fill_empty(규칙으로 못 단 공고만) / review(규칙 결과를 AI 가 다시 봄) */
+    ai_roles: z
+      .object({ mode: z.enum(['off', 'fill_empty', 'review']).default('fill_empty'), model: z.string().default('') })
+      .default({ mode: 'fill_empty', model: '' }),
+    /** 직무 태그를 하나도 달지 못한 공고는 등록하지 않는다 */
+    require_role: z.boolean().default(false),
   }),
   apply: z
     .object({

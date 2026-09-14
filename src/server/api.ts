@@ -7,6 +7,8 @@ import { loadSettings } from '../config';
 import { NotionClient } from '../notion/client';
 import { COLLECTORS } from '../collectors';
 import { loadDutyGroups } from '../collectors/jasoseol';
+import { loadDutyCategories } from '../collectors/jobkorea';
+import { PoliteHttp } from '../http';
 import { parseDeadline, type JobPosting } from '../jobs/model';
 import { OUTCOME_LABEL } from '../pipeline/collect';
 import { collectNow } from '../pipeline/run';
@@ -172,6 +174,10 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
     } finally {
       await session.detach({ closeTab: true });
     }
+  },
+  'GET /api/collect/jobkorea-duty-categories': async () => {
+    const categories = await loadDutyCategories(new PoliteHttp(loadSettings().collect.request_delay_ms));
+    return { categories };
   },
   'POST /api/collect/run': async (b) => {
     if (collectRunning) throw new Error('이미 수집 중입니다. 끝날 때까지 기다려 주세요.');
