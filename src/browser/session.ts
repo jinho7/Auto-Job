@@ -3,7 +3,7 @@
 import type { Browser, BrowserContext, Dialog, Locator, Page } from 'playwright-core';
 import type { GuardConfig, Settings } from '../config';
 import { connectCdp } from './cdp';
-import { ARM_SCRIPT, checkLabel, GuardBlockedError, normalizeLabel, pageGuardScript } from './guard';
+import { checkLabel, GuardBlockedError, installGuard, normalizeLabel } from './guard';
 
 export type FillResult = 'filled' | 'skipped-prefilled';
 
@@ -16,6 +16,7 @@ export class BrowserSession {
     readonly context: BrowserContext,
     private readonly guard: GuardConfig,
     public page: Page,
+    private readonly tabGuard: Awaited<ReturnType<typeof installGuard>>,
   ) {}
 
   static async open(settings: Settings): Promise<BrowserSession> {
@@ -24,23 +25,22 @@ export class BrowserSession {
     const browser = await connectCdp(settings.browser[driver]);
     const context = browser.contexts()[0] ?? (await browser.newContext());
 
-    const script = pageGuardScript(guard);
-    await context.addInitScript(script);
-    // 이미 열려 있던 문서에도 즉시 적용
-    for (const p of context.pages()) for (const f of p.frames()) await f.evaluate(script).catch(() => {});
-
+    // 가드는 이 세션이 연 탭(과 그 팝업)에만 건다. 같은 브라우저의 다른 탭에는 영향이 없다.
     const page = await context.newPage();
-    const session = new BrowserSession(browser, context, guard, page);
-    context.on('dialog', (d) => session.onDialog(d));
-    context.on('page', (p) => session.events.push(`새 창: ${p.url() || '(로딩 중)'}`));
+    const tabGuard = await installGuard(page, guard);
+    const session = new BrowserSession(browser, context, guard, page, tabGuard);
+    // 컨텍스트에 리스너가 있으면 Playwright 가 다른 탭의 대화상자를 자동으로 닫지 않는다. 내 탭 것만 처리한다.
+    context.on('dialog', (d) => {
+      if (tabGuard.owns(d.page())) void session.onDialog(d);
+    });
+    page.on('popup', (p) => session.events.push(`새 창: ${p.url() || '(로딩 중)'}`));
     return session;
   }
 
   /** 지원서 입력 단계 진입. 이후로는 block_when_armed(지원하기 등)도 차단한다. */
   async arm(): Promise<void> {
     this.armed = true;
-    await this.context.addInitScript(ARM_SCRIPT);
-    for (const p of this.context.pages()) for (const f of p.frames()) await f.evaluate(ARM_SCRIPT).catch(() => {});
+    await this.tabGuard.arm();
   }
 
   get isArmed(): boolean {
@@ -74,8 +74,12 @@ export class BrowserSession {
     return 'filled';
   }
 
+  /** 뒤에 가려진 탭은 화면을 그리지 않아 캡처가 멈출 수 있어, 앞으로 가져온 뒤 찍는다. 전체 페이지가 안 되면 보이는 부분만. */
   async screenshot(file: string): Promise<void> {
-    await this.page.screenshot({ path: file, fullPage: true });
+    await this.page.bringToFront().catch(() => {});
+    await this.page
+      .screenshot({ path: file, fullPage: true, timeout: 15_000, animations: 'disabled' })
+      .catch(() => this.page.screenshot({ path: file, timeout: 15_000, animations: 'disabled' }));
   }
 
   async bringToFront(): Promise<void> {
@@ -89,6 +93,10 @@ export class BrowserSession {
   }
 
   private async onDialog(d: Dialog): Promise<void> {
+    await this.handleDialog(d).catch(() => {}); // 다른 연결이 먼저 처리했으면 "No dialog is showing" — 무시
+  }
+
+  private async handleDialog(d: Dialog): Promise<void> {
     const msg = d.message();
     // 페이지 나가기 확인창은 항상 "머무르기"
     if (d.type() === 'beforeunload') {

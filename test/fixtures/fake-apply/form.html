@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>가짜회사 입사지원서 작성</title>
+<style>
+body{font-family:sans-serif;max-width:900px;margin:20px auto} table{border-collapse:collapse;width:100%;margin-bottom:6px}
+th,td{border:1px solid #ccc;padding:6px;text-align:left} th{background:#f3f3f3;width:140px} h2{margin-top:28px}
+.radio input{position:absolute;opacity:0;width:1px;height:1px} .radio label{border:1px solid #aaa;padding:4px 12px;margin-right:4px;cursor:pointer}
+.radio input:checked+label{background:#246;color:#fff} #log{white-space:pre-wrap;background:#eee;padding:6px}
+</style></head>
+<body>
+<div class="top"><a href="login.html">로그아웃</a> · <a href="#" onclick="return false">마이페이지</a></div>
+<h1>입사지원서 작성 — 백엔드 개발 (신입)</h1>
+
+<h2 class="tit">기본정보</h2>
+<table>
+  <tr><th>성명(한글)</th><td><input id="name_ko" maxlength="20"></td></tr>
+  <tr><th>성명(영문)</th><td><input id="name_en" placeholder="예) HONG GILDONG"></td></tr>
+  <tr><th>생년월일</th><td><input id="birth" placeholder="YYYY-MM-DD"></td></tr>
+  <tr><th>성별</th><td class="radio">
+    <input type="radio" name="gender" id="g_m" value="M"><label for="g_m">남</label>
+    <input type="radio" name="gender" id="g_f" value="F"><label for="g_f">여</label></td></tr>
+  <tr><th>휴대폰</th><td>
+    <select id="phone1" title="휴대폰 앞자리"><option>010</option><option>011</option><option>016</option></select> -
+    <input id="phone2" title="휴대폰 가운데 자리" maxlength="4" size="4"> -
+    <input id="phone3" title="휴대폰 끝자리" maxlength="4" size="4"></td></tr>
+  <tr><th>이메일</th><td><input id="email" value="member@signup.example" readonly> <span style="color:#888">회원가입 이메일</span></td></tr>
+  <tr><th>주소</th><td>
+    <input id="zip" title="우편번호" readonly size="6"> <button type="button" onclick="window.open('addr.html','addr','width=480,height=420')">주소검색</button><br>
+    <input id="addr1" title="기본주소" readonly size="50"><br>
+    <input id="addr2" title="상세주소" size="50"></td></tr>
+  <tr><th>병역구분</th><td><select id="mil_status"><option value="">선택하세요</option><option>군필</option><option>미필</option><option>면제</option><option>해당없음</option></select></td></tr>
+  <tr><th>군별</th><td><select id="mil_branch"><option value="">선택하세요</option><option>육군</option><option>해군</option><option>공군</option><option>해병대</option><option>기타</option></select></td></tr>
+  <tr><th>복무기간</th><td><input id="mil_start" title="입대년월" placeholder="YYYY.MM" size="8"> ~ <input id="mil_end" title="전역년월" placeholder="YYYY.MM" size="8"></td></tr>
+  <tr><th>보훈대상</th><td class="radio">
+    <input type="radio" name="veteran" id="v_n" value="N"><label for="v_n">비대상</label>
+    <input type="radio" name="veteran" id="v_y" value="Y"><label for="v_y">대상</label></td></tr>
+  <tr><th>증명사진</th><td><input type="file" id="photo" accept="image/*"></td></tr>
+</table>
+
+<h2 class="tit">학력사항</h2>
+<table id="edu">
+  <thead><tr><th>구분</th><th>학교명</th><th>전공</th><th>입학년월</th><th>졸업년월</th><th>졸업구분</th><th>학점</th><th>만점</th></tr></thead>
+  <tbody></tbody>
+</table>
+<button type="button" onclick="addEdu()">+ 학력 추가</button>
+
+<h2 class="tit">어학</h2>
+<table id="lang">
+  <thead><tr><th>시험명</th><th>점수/등급</th><th>취득일</th></tr></thead>
+  <tbody></tbody>
+</table>
+<button type="button" onclick="addLang()">+ 어학 추가</button>
+
+<h2 class="tit">자격증</h2>
+<table id="cert">
+  <thead><tr><th>자격증명</th><th>발급기관</th><th>취득일</th></tr></thead>
+  <tbody></tbody>
+</table>
+<button type="button" onclick="addCert()">+ 자격증 추가</button>
+
+<h2 class="tit">경력사항</h2>
+<table id="career">
+  <thead><tr><th>회사명</th><th>근무기간</th><th>담당업무</th></tr></thead>
+  <tbody><tr><td><input></td><td><input placeholder="YYYY.MM~YYYY.MM"></td><td><input></td></tr></tbody>
+</table>
+
+<h2 class="tit">자기소개서</h2>
+<table>
+  <tr><th>지원동기 (1000자)</th><td><textarea id="q1" rows="5" cols="70" maxlength="1000"></textarea></td></tr>
+</table>
+
+<div style="margin-top:24px">
+  <button type="button" onclick="log('임시저장')">임시저장</button>
+  <button type="button" onclick="if(confirm('작성을 취소하시겠습니까?')) log('CANCELLED')">작성 취소</button>
+  <button type="button" onclick="log('SUBMITTED')">최종 제출</button>
+</div>
+<div id="log"></div>
+
+<script>
+function log(m){ document.getElementById('log').textContent += m + '\n'; }
+function row(cells){ const tr=document.createElement('tr'); tr.innerHTML=cells.map(c=>'<td>'+c+'</td>').join(''); return tr; }
+function addEdu(){ document.querySelector('#edu tbody').append(row([
+  '<select><option value="">선택</option><option>고등학교</option><option>대학교(4년)</option><option>대학교(2,3년)</option><option>대학원(석사)</option></select>',
+  '<input>', '<input>', '<input placeholder="YYYY.MM" size="8">', '<input placeholder="YYYY.MM" size="8">',
+  '<select><option value="">선택</option><option>졸업</option><option>졸업예정</option><option>재학</option><option>휴학</option><option>중퇴</option></select>',
+  '<input size="4">', '<select><option value="">선택</option><option>4.5</option><option>4.3</option><option>4.0</option><option>100</option></select>' ])); }
+function addLang(){ document.querySelector('#lang tbody').append(row([
+  '<select><option value="">선택</option><option>TOEIC</option><option>TOEIC Speaking</option><option>OPIc</option><option>TEPS</option><option>기타</option></select>',
+  '<input>', '<input placeholder="YYYY.MM.DD">' ])); }
+function addCert(){ document.querySelector('#cert tbody').append(row(['<input>', '<input>', '<input placeholder="YYYY.MM.DD">'])); }
+addEdu(); addLang(); addCert();
+</script>
+</body></html>

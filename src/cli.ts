@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
+import { applyNow, formatApplyReport } from './apply/run';
 import YAML from 'yaml';
 import { BrowserSession } from './browser/session';
 import { browserSelfTest, formatSelfTest } from './browser/selftest';
@@ -338,11 +340,7 @@ browser
     }),
   );
 
-// ─── 이후 단계 ──────────────────────────────────────────
-const notYet = (milestone: string) => () => {
-  console.log(`아직 구현되지 않았습니다 (${milestone}). PLAN.md 로드맵 참고.`);
-  process.exitCode = 2;
-};
+// ─── 공고 수집 / 지원서 ─────────────────────────────────
 program
   .command('collect')
   .description('공고 수집 → 필터 → 중복 제외 → Notion 등록')
@@ -369,6 +367,21 @@ program
       notify('Auto-Job 공고 수집', `${report.dryRun ? '미리보기' : '등록'} ${report.counts.registered ?? report.counts.would_register ?? 0}건`);
     }),
   );
-program.command('apply').description('지원서 작성 (임시저장까지)').argument('<target>', 'Notion 페이지 또는 공고 URL').action(notYet('M3~M5'));
+program
+  .command('apply')
+  .description('지원서 작성: 로그인 대기(직접) → 인적사항 입력(AI, 자기소개서 전까지). 제출은 하지 않는다')
+  .argument('<target>', 'Notion 공고 페이지 주소, 지원 페이지 주소, 또는 HTML 파일')
+  .option('--no-wait', '로그인 대기 없이 바로 입력 (이미 입력 화면일 때)')
+  .action(
+    run(async (target: string, o: { wait: boolean }) => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const report = await applyNow({ target, skipLoginWait: !o.wait, ask: (q) => rl.question(`\n${q}\n> `) });
+        console.log(`\n${formatApplyReport(report)}\n\n리포트: ${report.dir}`);
+      } finally {
+        rl.close();
+      }
+    }),
+  );
 
 await program.parseAsync();

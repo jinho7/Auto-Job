@@ -19,7 +19,15 @@ async function cdpVersion(port: number): Promise<{ Browser: string } | null> {
 function launch(cfg: CdpBrowserConfig): void {
   if (!existsSync(cfg.app)) throw new Error(`브라우저 앱을 찾을 수 없습니다: ${cfg.app}`);
   mkdirSync(cfg.profile_dir, { recursive: true });
-  const flags = [`--remote-debugging-port=${cfg.cdp_port}`, `--user-data-dir=${cfg.profile_dir}`, '--no-first-run'];
+  const flags = [
+    `--remote-debugging-port=${cfg.cdp_port}`,
+    `--user-data-dir=${cfg.profile_dir}`,
+    '--no-first-run',
+    // 창이 다른 창에 가려지거나 뒤에 있어도 화면을 계속 그리게 한다 (캡처·입력이 멈추지 않도록)
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+  ];
   const child =
     process.platform === 'darwin' && cfg.app.endsWith('.app')
       ? // -n: 평소 쓰는 창과 별개의 인스턴스로 실행

@@ -7,7 +7,10 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 /** 개인 데이터 위치. 기본은 저장소 폴더, AUTOJOB_HOME 으로 바꿀 수 있다 (여러 프로필, 테스트용). */
 const HOME = process.env.AUTOJOB_HOME ? path.resolve(process.env.AUTOJOB_HOME) : ROOT;
 
+export const DATA_HOME = HOME;
+
 export const paths = {
+  prompts: path.join(ROOT, 'prompts'),
   settings: path.join(HOME, 'settings.yaml'),
   env: path.join(HOME, '.env'),
   settingsExample: path.join(ROOT, 'settings.example.yaml'),

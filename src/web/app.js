@@ -69,7 +69,7 @@ const SETTINGS_PAGES = [
   ['실행', [['collect', '공고 수집']]],
   ['검색 조건', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태'], ['roles', '직무 태그 규칙']]],
   ['기업 필터', [['companies', '기업 구분'], ['overrides', '회사 직접 지정']]],
-  ['작성', [['essay', '자기소개서 문체']]],
+  ['작성', [['apply', '지원서 입력 규칙'], ['essay', '자기소개서 문체']]],
   ['연결', [['notion', 'Notion'], ['browser', '브라우저'], ['llm', 'AI 연결'], ['guard', '제출 차단 문구']]],
 ];
 
@@ -416,6 +416,19 @@ function settingsPage(id) {
           toggle('블라인드 규정 지키기 (실명, 학교명, 특정 단체명 쓰지 않기)', 'essay.blind'),
         ),
         card('쓰지 않을 표현', chipEditor('essay.banned_phrases', { placeholder: '예: 단순한 ~가 아닌' })),
+      );
+
+    case 'apply':
+      return page('지원서 입력 규칙', '"autojob apply" 로 지원서의 인적사항(자기소개서 전까지)을 채울 때 AI 가 따르는 규칙입니다.',
+        card('기본 규칙 (항상 적용)', h('ul', { style: 'margin:0;padding-left:18px' },
+          ['이미 입력된 값은 수정하거나 삭제하지 않는다', '내 정보에 없는 값은 추정하지 않고 빈칸으로 두고, 비운 칸을 기록한다', '자기소개서와 자유 서술형 칸은 채우지 않는다',
+            '제출·작성완료 버튼은 누르지 않는다 (코드로도 막음). 임시저장은 괜찮다', '삭제·로그아웃·작성취소는 누르지 않는다 (코드로도 막음)', '날짜는 칸의 형식에 맞추고, 주소는 팝업에서 검색해 고른다',
+            '로그인·본인인증·CAPTCHA·약관 동의는 사용자에게 맡긴다'].map((r) => h('li', null, r))),
+          h('p', { class: 'muted small' }, '전체 내용: prompts/fill-basic-info.md')),
+        card('추가 규칙', chipEditor('apply.extra_rules', { placeholder: '예: 희망 연봉은 "회사 내규에 따름"을 고른다', emptyText: '(없음)' })),
+        card('AI 모델', textSetting('모델', 'apply.model', { hint: '비우면 Claude Code 기본 모델. 예: claude-sonnet-5 (더 가볍고 빠름)' })),
+        card('실행 방법', h('pre', { style: 'margin:0;white-space:pre-wrap' }, 'autojob apply <Notion 공고 페이지 주소 또는 지원 페이지 주소>'),
+          h('p', { class: 'muted small' }, '브라우저가 열리면 로그인·본인인증을 직접 하고 인적사항 입력 화면까지 간 뒤 터미널에서 Enter 를 누르세요. 끝나면 비워둔 값과 참고사항을 알려줍니다. 제출은 하지 않습니다.')),
       );
 
     case 'notion':

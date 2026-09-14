@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>우편번호 검색</title></head>
+<body style="font-family:sans-serif">
+<h3>도로명 주소 검색</h3>
+<form id="f" onsubmit="event.preventDefault(); search()">
+  <input id="kw" placeholder="도로명, 건물명 입력"> <button type="button" onclick="search()">검색</button>
+</form>
+<ul id="results"></ul>
+<script>
+function search() {
+  const kw = document.getElementById('kw').value.trim();
+  const all = [['04524', '서울특별시 중구 세종대로 110'], ['03187', '서울특별시 종로구 세종대로 175'], ['06164', '서울특별시 강남구 테헤란로 521']];
+  const list = all.filter(([, a]) => !kw || a.replace(/\s/g, '').includes(kw.replace(/\s/g, '')));
+  document.getElementById('results').innerHTML = list.map(([z, a]) => `<li><a href="#" onclick="pick('${z}','${a}');return false">${a} (${z})</a></li>`).join('') || '<li>검색 결과가 없습니다</li>';
+}
+function pick(z, a) {
+  opener.document.getElementById('zip').value = z;
+  opener.document.getElementById('addr1').value = a;
+  window.close();
+}
+</script>
+</body></html>

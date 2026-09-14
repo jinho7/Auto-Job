@@ -75,6 +75,14 @@ export const settingsSchema = z.object({
     request_delay_ms: z.number().int().min(500).max(30_000).default(1500),
     jasoseol: z.object({ duty_groups: z.array(z.string()).default([]) }).default({ duty_groups: [] }),
   }),
+  apply: z
+    .object({
+      /** 인적사항 입력 AI 에게 줄 추가 규칙 (기본 규칙은 prompts/fill-basic-info.md) */
+      extra_rules: z.array(z.string()).default([]),
+      /** 비우면 Claude Code 기본 모델 */
+      model: z.string().default(''),
+    })
+    .default({ extra_rules: [], model: '' }),
   essay: z.object({
     tone: z.string(),
     subtitle: z.boolean(),

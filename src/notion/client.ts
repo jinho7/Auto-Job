@@ -118,6 +118,10 @@ export class NotionClient {
     return this.req('POST', '/pages', body);
   }
 
+  async getPage(pageId: string): Promise<NotionPage> {
+    return this.req<NotionPage>('GET', `/pages/${pageId}`);
+  }
+
   async updatePage(pageId: string, properties: Record<string, unknown>): Promise<void> {
     await this.req('PATCH', `/pages/${pageId}`, { properties });
   }
