@@ -56,6 +56,7 @@ export const settingsSchema = z.object({
     model: z.string().default(''),
   }),
   browser: z.object({
+    /** handoff 는 예전 설정 호환용 (지원하지 않음 — 고르면 안내하고 멈춘다) */
     driver: z.enum(['aside', 'chrome', 'handoff']),
     aside: cdpBrowser,
     chrome: cdpBrowser,

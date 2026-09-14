@@ -25,7 +25,7 @@ test('set/add/remove 는 주석을 보존하며 저장한다', () => {
   assert.equal(reloaded.browser.driver, 'chrome');
   assert.equal(reloaded.browser.aside.cdp_port, 9333);
   assert.deepEqual(reloaded.collect.keywords, ['Spring Boot']);
-  assert.match(readFileSync(file, 'utf8'), /driver: chrome +# aside \| chrome \| handoff/);
+  assert.match(readFileSync(file, 'utf8'), /driver: chrome +# aside \| chrome/);
 });
 
 test('예전 설정 파일에 없는 목록에 추가해도 기본값을 잃지 않는다', () => {

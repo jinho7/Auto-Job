@@ -947,7 +947,6 @@ function browserPage() {
     card('종류', radios('driver', 'browser.driver', [
       ['aside', 'Aside (원격 조종)'],
       ['chrome', 'Chrome (원격 조종)'],
-      ['handoff', 'handoff (지시문을 만들어 Aside agent에 붙여넣기)'],
     ])),
     s.browser.driver !== 'handoff'
       ? card('앱 위치',

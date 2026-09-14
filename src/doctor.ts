@@ -111,7 +111,7 @@ export async function runDoctor(d: DoctorDeps = {}): Promise<Check[]> {
   // 브라우저
   const drv = s.browser.driver;
   if (drv === 'handoff') {
-    add({ id: 'browser', label: '브라우저', status: 'ok', detail: 'handoff (직접 붙여넣기)', page: ['settings', 'browser'] });
+    add({ id: 'browser', label: '브라우저', status: 'bad', detail: 'handoff 는 지원하지 않습니다. Aside 나 Chrome 을 골라 주세요', page: ['settings', 'browser'] });
   } else {
     const b = s.browser[drv];
     const appOk = existsSync(b.app);

@@ -4,6 +4,7 @@
 > 다른 취준생이 설치해도, 내 정보가 바뀌어도 그대로 쓸 수 있는 범용 구조를 목표로 한다.
 
 - 작성일: 2026-09-14
+- 상태: **v1 완료** (2026-09-14). 아래 내용은 실제 구현에 맞춰 고쳐 두었다.
 - 참고: [reference/ai-job-search](reference/ai-job-search) (MIT, 덴마크 구직용 Claude Code 프레임워크)
 
 ---
@@ -19,19 +20,20 @@
 
 ### v1에서 제외 (이후 검토)
 - All-Auto 모드(최종 제출까지 자동). 제출은 되돌릴 수 없으므로 v1에서는 **항상 사람이 누른다**
-- 면접 준비, 합불 추적 자동화, 로컬 UI 대시보드
+- 면접 준비, 합불 추적 자동화, 지원 현황 대시보드 (설정 화면 `autojob ui` 는 v1 에 포함)
 
 ---
 
 ## 2. 사용 흐름
 
 ```
-autojob init                 # 최초 1회: settings.yaml, profile/me/ 생성
-autojob settings             # 설정 편집기 (키워드, 수집처, 기업 구분, Notion, 문체, 브라우저 ...)
-autojob profile edit         # 내 정보 편집기
-autojob profile check        # 내 정보 검증 (빠진 항목, 형식 오류)
-autojob collect              # 공고 수집 → 필터 → 중복 제거 → 보강 → Notion 등록
-autojob apply <Notion페이지|공고URL>   # 지원서 작성 Phase A~F
+autojob init                 # 최초 1회: 설정 파일·내 정보 파일 생성, 설정 안내 (화면 / 터미널)
+autojob ui                   # 설정 화면 (모든 설정과 내 정보, 시작하기 점검, 공고 수집 실행)
+autojob doctor [--ai]        # 준비 상태 점검
+autojob settings             # 설정 편집기 (터미널)
+autojob profile edit         # 내 정보 편집기 (터미널)
+autojob collect [--dry-run]  # 공고 수집 → 필터 → 중복 제거 → 지원 페이지 확인 → 보강 → Notion 등록
+autojob apply <Notion페이지|지원URL>   # 지원서 작성 ①~⑥ (임시저장까지)
 ```
 
 **개발 원칙:** 개발 과정에서 사용자의 정보나 설정값을 대신 채우지 않는다. 사용자에 따라 달라지는 값은 모두 설정이나 내 정보로 빼고, 사용자가 직접 입력하는 도구(편집기, CLI)를 제공한다.
@@ -73,43 +75,35 @@ autojob apply <Notion페이지|공고URL>   # 지원서 작성 Phase A~F
 
 ```
 Auto-Job/
-├── PLAN.md
-├── README.md
-├── settings.example.yaml         # 설정 틀 (복사해서 settings.yaml로 사용)
-├── settings.yaml                 # 내 설정 (gitignore)
-├── .env                          # NOTION_TOKEN 등 (gitignore)
+├── PLAN.md · README.md
+├── settings.example.yaml         # 설정 틀 (init 이 settings.yaml 로 복사)
+├── settings.yaml · .env          # 내 설정 · 토큰과 API 키 (gitignore)
+├── bin/autojob                   # 실행 진입점 (npm link)
 ├── profile/
 │   ├── schema.yaml               # 내 정보 항목 정의 (공개). 편집기, 검사, 빈 틀, 자동 입력의 기준
-│   └── me/                       # 내 정보 (gitignore). init 이 schema 로 생성
-│       ├── basic.yaml            # 기본정보
-│       ├── education.yaml        # 학력 / 연구
-│       ├── career.yaml           # 경력 / 교육 / NCS
-│       ├── extras.yaml           # 어학 / 자격 / 기타
-│       ├── target.yaml           # 희망 조건
-│       ├── stories.yaml          # 자소서 소재 (상황, 행동, 결과, 배운 점)
-│       └── files/                # 증명사진, 증명서 PDF 등 업로드 파일
-├── prompts/                      # AI 작업 지시서 (skill)
+│   └── me/                       # 내 정보 (gitignore): basic, education, career, extras, target, stories, files/
+├── prompts/                      # AI 작업 지시서
 │   ├── fill-basic-info.md        # 인적사항 입력 규칙
-│   ├── essay-strategy.md         # 문항 전체 전략
-│   ├── essay-write.md            # 문항별 작성 + 문체 규칙
-│   ├── essay-review.md           # 리뷰어
-│   ├── classify-company.md       # 기업 구분 판정
-│   └── map-job-tags.md           # 직무 태그 매핑
+│   ├── essay-extract.md          # 자기소개서 문항·지원서 구성 찾기
+│   ├── essay-write.md            # 조사 → 전략 → 작성 (문체 규칙은 설정에서 붙음)
+│   ├── essay-review.md           # 검토
+│   ├── find-apply-link.md        # 지원 페이지 찾기 (수집)
+│   └── tag-roles.md              # 직무 태그 (수집)
 ├── src/
-│   ├── cli.ts
-│   ├── profile/                  # schema 로더, 저장소, 검사, 편집기  ✅
-│   ├── settings/                 # 설정 저장소, 편집기  ✅
-│   ├── ui/                       # 대화형 입력 추상화 (테스트에서는 가짜 입력)  ✅
-│   ├── collectors/               # saramin, jobkorea, wanted, incruit, catch, jasoseol
-│   ├── pipeline/                 # filter, dedup, enrich
-│   ├── notion/                   # client, schema-mapping, bootstrap(DB 생성)
-│   ├── browser/                  # driver 인터페이스, aside-cdp, chrome, handoff, guard
-│   ├── mcp/                      # autojob-browser MCP 서버
-│   ├── llm/                      # 어댑터
-│   └── checks/                   # 글자수, 금지 표현, 블라인드 위반 검사
-├── data/                         # 로컬 상태 (gitignore)
-│   ├── jobs.sqlite               # 수집 이력, 중복 키
-│   └── runs/<날짜>_<회사>/       # 스크린샷, 리포트, 자소서 초안
+│   ├── cli.ts · init.ts · doctor.ts · config.ts · paths.ts · secrets.ts · http.ts
+│   ├── profile/ · settings/ · ui/    # 내 정보·설정 저장소와 편집기, 대화형 입력
+│   ├── server/ · web/            # 설정 화면 (127.0.0.1, 접속 토큰)
+│   ├── collectors/               # saramin, jasoseol, jobkorea, catch, wanted
+│   ├── jobs/                     # 기업 구분, 중복, 지원 페이지 확인·AI 검색, 직무 태그(규칙·AI), 처리 기록
+│   ├── pipeline/                 # 수집 파이프라인과 리포트
+│   ├── notion/                   # API 클라이언트, 속성 매칭, 페이지 만들기, 본문 채우기, DB 만들기
+│   ├── browser/                  # CDP 연결(Aside/Chrome), 세션, 입력칸 목록, 제출 차단 가드, 자체 테스트
+│   ├── mcp/                      # autojob-browser MCP 서버 (AI 가 브라우저를 다루는 유일한 통로)
+│   ├── apply/                    # 지원서 작성 흐름, 브라우저 도구, 사람 확인 다리(bridge)
+│   ├── essay/                    # 자기소개서 작성·검사
+│   └── llm/                      # AI 연결 4가지 (claude-cli, codex-cli, anthropic-api, openai-api)
+├── test/                         # 단위·흐름 테스트, 가짜 채용 사이트
+├── data/                         # 로컬 상태 (gitignore): seen.json(처리 기록), runs/(리포트, 캡처)
 └── reference/ai-job-search/      # 참고용 원본 (gitignore)
 ```
 
@@ -158,11 +152,11 @@ Auto-Job/
 2. **필터:** 신입, 인턴, 계약직만 남긴다. 경력직은 제외하되 **[신입 및 경력]은 포함**한다. 마감이 지난 공고는 제외한다.
 3. **기업 구분:** 기업 규모에 따라 넣을지 뺄지 정한다(6.3).
 4. **중복 제거:** 같은 공고는 **절대** 두 번 넣지 않는다.
-   - 키: `정규화(회사명) + 정규화(공고 제목) + 마감일`, 또는 실제 지원 URL
-   - 로컬 `jobs.sqlite`와 **Notion DB의 기존 페이지** 둘 다와 비교한다
+   - 기준: 지원 링크가 같거나, 정규화한 회사명이 같고 마감일(또는 둘 다 상시)이 같으면 중복. 애매하면 중복으로 본다
+   - 로컬 처리 기록(`data/seen.json`)과 **Notion DB의 기존 페이지** 둘 다와 비교한다
    - 같은 회사의 같은 공고에 직무가 여러 개면 페이지 1개에 직무 태그를 여러 개 단다
 5. **실제 지원 페이지 찾기 (필수):** 6.4 순서로 찾는다. **못 찾으면 없는 공고로 보고 등록하지 않는다.**
-6. **보강 (AI + 웹검색):** 직무 태그, 채용 분류, 참고 키워드를 채운다.
+6. **보강:** 채용 분류는 코드로, 직무 태그는 규칙 → (설정에 따라) AI 로 채운다. 참고 키워드는 비워 둔다.
 7. **Notion 등록:** 6.2 규칙으로 페이지를 만들고, 본문에 6개 섹션 헤더를 넣는다.
 8. **수집 리포트:** 등록 건수와 제외 건수를 사유별로 보여준다(경력직, 중소, 중복, 마감, 지원 페이지 없음).
 
@@ -182,17 +176,17 @@ Auto-Job/
 | 서류 합격 발표 일자 | date | 빈칸 |
 | 제출 자료 | file | 빈칸 |
 
-필드 이름과 옵션 매핑은 `settings.yaml`의 `notion.fields`에 둔다. 그래서 다른 사람의 DB에도 매핑만 바꿔서 쓸 수 있다. 처음 쓰는 사용자는 `autojob init`이 같은 스키마로 DB를 새로 만든다.
+필드 이름과 옵션 매핑은 `settings.yaml`의 `notion.fields`에 둔다. 그래서 다른 사람의 DB에도 매핑만 바꿔서 쓸 수 있다. 처음 쓰는 사용자는 설정 화면이나 `autojob notion bootstrap` 으로 같은 구조의 DB를 새로 만든다.
 
 ### 6.3 기업 구분 설정
 자소설닷컴 달력 필터처럼 구분마다 켜고 끌 수 있다.
 
 ```yaml
 company_types:
-  대기업:        { include: true,  priority: true  }   # 공정위 대기업집단 목록 기반
-  유명IT:        { include: true,  priority: true  }   # 네카라쿠배당토 등 시드 목록 + 사용자 추가
+  대기업:        { include: true,  priority: true  }   # 회사명 단어(삼성, SK …) + 사이트 기업 규모
+  유명IT:        { include: true,  priority: true  }   # 시드 목록 + 사용자 추가
   금융:          { include: true,  priority: false }   # 은행, 증권, 카드, 보험
-  공기업:        { include: true,  priority: false }   # 공공기관 목록 기반
+  공기업:        { include: true,  priority: false }   # 회사명 단어(공사, 공단 …) + 사이트 정보
   중견:          { include: true,  priority: false }
   외국계:        { include: true,  priority: false }
   스타트업:      { include: true,  priority: false }   # 투자 유치나 인지도가 있는 곳
@@ -203,22 +197,16 @@ overrides:
   priority: []          # 작성중으로 올릴 회사
 ```
 
-판정 순서: `overrides` → 공식 목록(대기업집단, 공공기관) → 시드 목록 → AI 웹검색(기업정보의 기업형태, 사원수). 끝까지 판정되지 않으면 포함하고 로그를 남긴다.
+판정 순서: `overrides` → 구분별 회사 목록 → 회사명 단어 → 사이트가 알려준 기업 규모(사람인 기업형태, 잡코리아 기업구분, 캐치·자소설 기업 분류). 끝까지 판정되지 않으면 포함하고 리포트에 이유를 남긴다. 목록과 단어는 설정 화면에서 고친다.
 
 ### 6.4 실제 지원 페이지 찾기
 "실제 지원 페이지"는 지원서를 실제로 작성하는 곳이다. 아래 순서로 찾는다.
 
-1. **수집처에서 바로 지원하는 공고**(원티드 지원하기, 사람인 입사지원 등)는 그 공고 URL이 곧 지원 페이지다.
-2. **공고 본문에 있는 지원 링크.** 홈페이지 지원 공고는 대부분 본문에 링크가 있다. 이 링크는 도메인 검증을 통과해야만 쓴다.
-3. **회사 채용 사이트 탐색.** 자주 쓰이는 채용 플랫폼(`*.recruiter.co.kr`, `*.greetinghr.com`, `*.ninehire.site`, `careers.*`, `recruit.*` 등)에서 공고명으로 찾는다.
-4. **웹 검색.** `"회사명" "공고명" 채용`, `"회사명" 채용 지원서 작성` 등으로 검색한다.
+1. **수집처에서 바로 지원하는 공고**(사람인 입사지원, 잡코리아 즉시지원, 원티드 지원 등)는 그 공고 URL이 곧 지원 페이지다.
+2. **수집처 상세의 지원 링크.** 홈페이지 지원 공고는 상세 정보에 회사 채용 사이트 링크가 있다 (사람인·잡코리아·캐치·자소설).
+3. **AI 웹 검색.** 링크가 없거나 열리지 않으면 AI 가 회사 채용 사이트(`*.recruiter.co.kr`, `*.greetinghr.com`, `careers.*` 등)에서 **같은 공고**를 찾는다. 같은 공고인지(회사, 제목, 마감일) 확인하는 것은 AI 의 몫이다.
 
-찾은 링크는 반드시 검증한다.
-- 페이지가 열린다
-- 회사명과 공고명(또는 직무)이 일치한다
-- 마감되지 않았다
-
-검증을 통과하지 못하면 등록하지 않고, 수집 리포트의 "지원 페이지 없음"에 남긴다.
+찾은 링크는 코드가 다시 연다 (HTTP, 봇 차단이면 자동화 브라우저). 열리지 않거나 카페·블로그 같은 사이트면 등록하지 않고, 수집 리포트의 "지원 페이지 없음"에 이유와 함께 남긴다. 한 번 못 찾은 공고는 7일 뒤 다시 확인한다.
 
 ---
 
@@ -288,9 +276,9 @@ AI 작업 규칙 (`prompts/fill-basic-info.md`):
 ### 8.1 드라이버 종류
 | 드라이버 | 설명 | 상태 |
 |---|---|---|
-| `aside-cdp` (기본) | Aside(Chromium 152)를 `--remote-debugging-port`로 띄우고 Playwright `connectOverCDP`로 조종. 자동화 전용 프로필 `~/.autojob/browser-profiles/aside` 사용 | ✅ 2026-09-14 연결 테스트 통과 |
-| `chrome` | Playwright로 Chrome 영구 프로필을 조종 | 대체용 |
-| `handoff` | 지시문과 프로필 데이터를 만들어 Aside 내장 agent에 붙여넣게 함. 결과는 사용자가 확인 | 선택 |
+| `aside` (기본) | Aside(Chromium 152)를 `--remote-debugging-port`로 띄우고 Playwright `connectOverCDP`로 조종. 자동화 전용 프로필 `~/.autojob/browser-profiles/aside` 사용 | ✅ 2026-09-14 연결 테스트 통과 |
+| `chrome` | Chrome 을 같은 방식(CDP, 자동화 전용 프로필)으로 조종. Aside 가 없으면 init 이 자동으로 고른다 | 대체용 |
+| `handoff` | 지시문을 만들어 Aside 내장 agent에 붙여넣게 하는 방식 | v1 에서 제외 (고르면 안내하고 멈춤) |
 
 Chromium 보안 정책 때문에 원격 조종은 **기본 프로필이 아닌 별도 프로필**에서만 켤 수 있다. 채용 사이트 로그인은 자동화 프로필에서 한 번씩 해두면 계속 유지된다.
 
@@ -326,8 +314,8 @@ Chromium 보안 정책 때문에 원격 조종은 **기본 프로필이 아닌 �
 
 ## 10. Notion 연동
 - **자동화에는 공식 API를 쓴다.** `NOTION_TOKEN`(integration)을 쓰고, 대상 DB를 integration에 공유해 두어야 한다.
-- 템플릿 기능에 의존하지 않고, 페이지를 만들 때 본문 6개 섹션을 직접 넣는다.
-- `autojob init --notion-bootstrap`: 새 사용자를 위해 같은 스키마의 DB를 만든다.
+- 페이지는 DB의 **기본 템플릿**으로 만들고(템플릿이 속성을 덮지 않게 적용 뒤 속성을 한 번 더 넣음), 템플릿이 없으면 설정의 제목 6개로 본문을 만든다.
+- 새 사용자: 설정 화면이나 `autojob notion bootstrap` 으로 같은 구조의 DB를 만든다.
 - 현재 DB에서 정리할 점: `체형형인턴`은 오타로 보이고, `합불 여부` 옵션에 cafe 링크가 섞여 있다. 매핑 설정으로 흡수하거나 직접 정리한다.
 
 ---
@@ -353,7 +341,16 @@ Chromium 보안 정책 때문에 원격 조종은 **기본 프로필이 아닌 �
 | **M4 apply ④** ✅ | 문항 찾기(AI+브라우저, `page_text`/`set_questions`) → 조사·전략·작성(AI, 웹 검색만) → 기계 검사(글자수 3가지 방식, 금지 표현 `~` 패턴, 가운뎃점, 소제목, 끝맺음, 블라인드, 반복) → 검토 → 고쳐 쓰기 → 형식 고치기 → 입력(코드). `autojob essay`(브라우저 없이), `apply --steps` | 가짜 채용 사이트에서 실제 Claude 로 문항 2개 작성·입력 확인, 검토가 지어낸 내용을 잡아 고쳐 씀 (2026-09-14) |
 | **M5 apply ⑤~⑥** ✅ | 임시저장(설정의 버튼 문구, 가드 적용), 검토 화면 띄우기, Notion 본문 6개 섹션 채우기(내용 있는 섹션은 둠, 없는 제목은 끝에 추가), 제출 상태 `작성중`(옵션 확인), 지원서 구성 기록(`set_form_info`), `autojob notion fill` | 가짜 채용 사이트에서 임시저장·절차·제출 서류 추출 확인, Notion 쓰기는 가짜 클라이언트로 검증 (2026-09-14). 실제 Notion 쓰기는 사용자 토큰 입력 후 |
 | **M6 범용화** ✅ | AI 연결 방식 4가지(Claude Code / Codex CLI / Anthropic API / OpenAI API)를 같은 모양으로 — 모든 AI 호출(인적사항, 자소서, 지원 페이지 검색, 직무 태그)이 설정 하나로 바뀜, `autojob doctor [--ai]` 준비 상태 점검, `autojob init` 마법사(설정 화면 / 터미널 차례대로), 설치된 브라우저 찾기(macOS·Windows·Linux), 설정 화면 "시작하기"와 AI 연결 확인·기본 모델, README 새 사용자 안내(준비물 → 설치 → 처음 쓰는 순서 → 문제 해결), tsx 를 실행 의존성으로 | 테스트 101개. 저장소를 개인 파일 없이 새 폴더에 복사해 README 순서대로 `npm ci → init → doctor → 테스트` 확인, Claude Code 로 가짜 채용 사이트 지원서 입력 재확인 (2026-09-14). Codex·API 방식은 가짜 codex / 가짜 응답 / 실제 MCP 서버로만 확인 |
-| 이후 | All-Auto, 면접 준비, 합불 추적, 로컬 대시보드 | |
+| **v1 마무리** ✅ | 문서를 실제 구현에 맞게 정리, 구현하지 않은 handoff 선택지 제거, 버전 1.0.0 | 테스트 전체 통과, 브라우저 자체 테스트 통과 (2026-09-14) |
+
+### 이후 (v1 다음)
+| 항목 | 메모 |
+|---|---|
+| 실제 환경 확인 | 사용자 Notion 토큰으로 실제 DB 등록·본문 채우기, 실제 채용 사이트 여러 곳에서 지원서 작성 |
+| Codex CLI · API 방식 실사용 확인 | 지금은 가짜 codex / 가짜 응답으로만 확인 |
+| 원티드 | robots.txt 를 읽을 수 있게 되면 자동으로 수집 (코드는 준비됨) |
+| All-Auto | 최종 제출까지 자동. 되돌릴 수 없어서 v1 에서는 항상 사람이 누름 |
+| 면접 준비, 합불 추적, 지원 현황 대시보드 | |
 
 ---
 

@@ -8,7 +8,7 @@ llm:
 
 # ─── 브라우저 ─────────────────────────────────────────────
 browser:
-  driver: aside                # aside | chrome | handoff
+  driver: aside                # aside | chrome
   aside:
     app: /Applications/Aside.app
     cdp_port: 9222

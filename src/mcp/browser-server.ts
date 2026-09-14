@@ -4,6 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import path from 'node:path';
+import pkg from '../../package.json' with { type: 'json' };
 import { ApplyTools, ToolError } from '../apply/tools';
 import { BridgeClient } from '../apply/bridge';
 import { loadSettings } from '../config';
@@ -149,7 +150,7 @@ export async function main(): Promise<void> {
     },
   };
 
-  const server = new Server({ name: 'autojob-browser', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'autojob-browser', version: pkg.version }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: Object.entries(TOOLS).map(([name, t]) => ({
       name,

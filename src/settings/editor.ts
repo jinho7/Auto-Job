@@ -356,17 +356,15 @@ export class SettingsEditor {
 
   private async browser(): Promise<void> {
     const b = this.store.settings.browser;
-    const driver = await this.p.select({
+    const driver = await this.p.select<'aside' | 'chrome'>({
       message: '브라우저',
-      default: b.driver,
+      default: b.driver === 'chrome' ? 'chrome' : 'aside',
       choices: [
         { name: 'Aside (원격 조종)', value: 'aside' as const },
         { name: 'Chrome (원격 조종)', value: 'chrome' as const },
-        { name: 'handoff (지시문을 만들어 Aside agent에 붙여넣기)', value: 'handoff' as const },
       ],
     });
     await this.attempt(() => this.store.set('browser.driver', driver));
-    if (driver === 'handoff') return this.ok('browser.driver = handoff');
     const app = await this.p.input({ message: `${driver} 앱 경로`, default: b[driver].app });
     await this.attempt(() => (this.store.set(`browser.${driver}.app`, app), this.ok(`browser.driver = ${driver}`)));
   }

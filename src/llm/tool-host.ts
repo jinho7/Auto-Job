@@ -2,6 +2,7 @@
 // Claude Code / Codex 는 MCP 서버를 스스로 띄우지만, API 는 우리가 도구 호출을 대신 전달해야 한다.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import pkg from '../../package.json' with { type: 'json' };
 import type { McpServerSpec } from './claude-cli';
 
 export type HostTool = { name: string; description: string; inputSchema: Record<string, unknown> };
@@ -18,7 +19,7 @@ const CALL_TIMEOUT_MS = 30 * 60_000;
 
 export async function connectMcp(spec: McpServerSpec): Promise<ToolHost> {
   const transport = new StdioClientTransport({ command: spec.command, args: spec.args, env: { ...(process.env as Record<string, string>), ...spec.env }, stderr: 'pipe' });
-  const client = new Client({ name: 'autojob', version: '0.1.0' });
+  const client = new Client({ name: 'autojob', version: pkg.version });
   await client.connect(transport);
   const listed = await client.listTools();
   return {

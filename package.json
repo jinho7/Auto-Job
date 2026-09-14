@@ -1,6 +1,6 @@
 {
   "name": "auto-job",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "채용 공고 수집 → Notion 정리 → 지원서 작성(임시저장)까지 AI로 자동화하는 개인용 취업 도구",
   "type": "module",
