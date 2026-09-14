@@ -1,7 +1,10 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
-import { applyNow, formatApplyReport } from './apply/run';
+import { applyNow, formatApplyReport, type ApplyStep } from './apply/run';
+import { parseQuestionsText } from './essay/checks';
+import { formatEssays, writeEssays } from './essay/pipeline';
 import YAML from 'yaml';
 import { BrowserSession } from './browser/session';
 import { browserSelfTest, formatSelfTest } from './browser/selftest';
@@ -17,7 +20,7 @@ import { checkCurrent, jobWriter, notionClient } from './notion/setup';
 import { parseNotionId } from './settings/store';
 import { openUrl } from './open';
 import { startServer } from './server/server';
-import { paths } from './paths';
+import { paths, runDir } from './paths';
 import { checkProfile } from './profile/check';
 import { ProfileEditor } from './profile/editor';
 import { loadSchema } from './profile/schema';
@@ -369,18 +372,46 @@ program
   );
 program
   .command('apply')
-  .description('지원서 작성: 로그인 대기(직접) → 인적사항 입력(AI, 자기소개서 전까지). 제출은 하지 않는다')
+  .description('지원서 작성: 로그인 대기(직접) → 인적사항 입력(AI) → 자기소개서 작성·입력(AI). 제출은 하지 않는다')
   .argument('<target>', 'Notion 공고 페이지 주소, 지원 페이지 주소, 또는 HTML 파일')
-  .option('--no-wait', '로그인 대기 없이 바로 입력 (이미 입력 화면일 때)')
+  .option('--no-wait', '로그인 대기 없이 바로 시작 (이미 입력 화면일 때)')
+  .option('--steps <steps>', '할 단계, 쉼표로: basic(인적사항), essay(자기소개서)', 'basic,essay')
   .action(
-    run(async (target: string, o: { wait: boolean }) => {
+    run(async (target: string, o: { wait: boolean; steps: string }) => {
+      const steps = o.steps.split(',').map((s) => s.trim()).filter(Boolean);
+      const bad = steps.filter((s) => s !== 'basic' && s !== 'essay');
+      if (bad.length) throw new Error(`알 수 없는 단계: ${bad.join(', ')} (basic, essay 중에서)`);
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       try {
-        const report = await applyNow({ target, skipLoginWait: !o.wait, ask: (q) => rl.question(`\n${q}\n> `) });
+        const report = await applyNow({ target, skipLoginWait: !o.wait, steps: steps as ApplyStep[], ask: (q) => rl.question(`\n${q}\n> `) });
         console.log(`\n${formatApplyReport(report)}\n\n리포트: ${report.dir}`);
       } finally {
         rl.close();
       }
+    }),
+  );
+
+program
+  .command('essay')
+  .description('자기소개서만 쓴다 (브라우저 없이): 회사·직무 조사 → 전략 → 작성 → 검사 → 검토 → 고쳐 쓰기')
+  .requiredOption('--company <name>', '회사명')
+  .requiredOption('--questions <file>', '문항 파일 (한 문항씩 빈 줄로 구분, 글자수 제한은 "(700자 이내)" 처럼 적기)')
+  .option('--role <role>', '지원 직무', '')
+  .option('--posting <url>', '공고 주소 (있으면 AI 가 참고)')
+  .action(
+    run(async (o: { company: string; questions: string; role: string; posting?: string }) => {
+      if (!existsSync(o.questions)) throw new Error(`문항 파일이 없습니다: ${o.questions}`);
+      const questions = parseQuestionsText(readFileSync(o.questions, 'utf8'));
+      if (!questions.length) throw new Error('문항을 찾지 못했습니다');
+      console.log(`문항 ${questions.length}개: ${questions.map((q) => `${q.id}번${q.maxChars ? `(최대 ${q.maxChars})` : ''}`).join(', ')}`);
+      const store = profileStore();
+      const dir = runDir(`essay-${o.company.replace(/[^0-9A-Za-z가-힣]+/g, '_').slice(0, 30)}`);
+      mkdirSync(dir, { recursive: true });
+      const result = await writeEssays({ company: o.company, role: o.role, postingUrl: o.posting, questions }, { settings: loadSettings(), profile: store.toJSON(), schema: store.schema, cwd: dir, log: console.log });
+      const md = formatEssays(result);
+      writeFileSync(path.join(dir, 'essays.md'), md);
+      console.log(`\n${md}\n\n저장: ${path.join(dir, 'essays.md')}`);
+      notify('Auto-Job 자기소개서', result.ok ? '자기소개서를 다 썼습니다' : '검사 문제가 남아 있습니다 — 확인해 주세요');
     }),
   );
 

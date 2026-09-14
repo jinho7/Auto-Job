@@ -415,7 +415,14 @@ function settingsPage(id) {
           toggle('단어 나열에 가운뎃점(·) 쓰지 않기', 'essay.forbid_middle_dot'),
           toggle('블라인드 규정 지키기 (실명, 학교명, 특정 단체명 쓰지 않기)', 'essay.blind'),
         ),
-        card('쓰지 않을 표현', chipEditor('essay.banned_phrases', { placeholder: '예: 단순한 ~가 아닌' })),
+        card('쓰지 않을 표현',
+          h('p', { class: 'muted small', style: 'margin-top:0' }, '~ 자리는 아무 말이나 들어가는 자리입니다. 띄어쓰기는 무시하고, ~ 바로 뒤의 조사는 짝(을/를, 이/가 …)도 같이 찾습니다.'),
+          chipEditor('essay.banned_phrases', { placeholder: '예: 단순한 ~가 아닌' })),
+        card('작성 방식',
+          textSetting('AI 모델', 'essay.model', { hint: '비우면 Claude Code 기본 모델. 예: claude-sonnet-5 (더 가볍고 빠름)' }),
+          textSetting('검토 후 고쳐 쓰기 횟수', 'essay.max_revisions', { type: 'number', hint: '0~3. 검토 AI 가 지적한 내용(지어낸 내용, 질문 의도 등)을 반영해 고쳐 쓰는 횟수' }),
+          h('p', { class: 'muted small' }, '순서: 회사·직무 조사 → 문항 전체 전략 → 작성 → 기계 검사(글자수, 금지 표현, 블라인드 등) → 검토 → 고쳐 쓰기. 사실은 내 정보와 자소서 소재에 있는 것만 씁니다.'),
+          h('pre', { style: 'margin:8px 0 0;white-space:pre-wrap' }, 'autojob essay --company 회사명 --role 직무 --questions 문항.txt   (브라우저 없이 자소서만)\nautojob apply <공고>                                         (지원서에 바로 입력)')),
       );
 
     case 'apply':

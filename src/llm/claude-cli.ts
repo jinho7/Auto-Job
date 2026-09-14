@@ -1,4 +1,5 @@
-// Claude Code 를 헤드리스(claude -p)로 돌린다. 내장 도구는 모두 끄고, 넘겨받은 MCP 서버의 도구만 쓰게 한다.
+// Claude Code 를 헤드리스(claude -p)로 돌린다.
+// 내장 도구는 넘겨받은 것만(기본: 없음), MCP 는 넘겨받은 서버만 쓴다. 사용자의 다른 MCP 설정은 불러오지 않는다.
 import { spawn } from 'node:child_process';
 
 export type AgentEvent =
@@ -9,24 +10,29 @@ export type AgentEvent =
 export type AgentRun = {
   prompt: string;
   systemAppend: string;
-  mcpConfigPath: string;
-  /** 허용할 MCP 서버 이름 (mcp__<이름> 으로 허용) */
-  mcpServer: string;
+  /** 쓸 수 있는 내장 도구 (예: ['WebSearch', 'WebFetch']). 비우면 내장 도구 없음 */
+  tools?: string[];
+  /** 쓸 MCP 서버 (설정 파일과 서버 이름) */
+  mcp?: { configPath: string; server: string };
   model?: string;
   cwd: string;
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
 };
 
-export async function runClaudeAgent(o: AgentRun): Promise<{ text: string; isError: boolean; costUsd?: number }> {
+export type AgentResult = { text: string; isError: boolean; costUsd?: number };
+
+export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
+  const tools = o.tools ?? [];
+  const allowed = [...tools, ...(o.mcp ? [`mcp__${o.mcp.server}`] : [])];
   const args = [
     '-p',
     '--output-format', 'stream-json',
     '--verbose',
-    '--tools', '', // 내장 도구(Bash, 파일 편집, 웹 등) 전부 끔
-    '--strict-mcp-config',
-    '--mcp-config', o.mcpConfigPath,
-    '--allowedTools', `mcp__${o.mcpServer}`,
+    '--tools', tools.join(','), // "" 이면 내장 도구 전부 끔
+    '--strict-mcp-config', // 사용자의 다른 MCP 서버는 불러오지 않는다
+    ...(o.mcp ? ['--mcp-config', o.mcp.configPath] : []),
+    ...(allowed.length ? ['--allowedTools', allowed.join(',')] : []),
     '--permission-mode', 'dontAsk', // 허용 목록에 없는 것은 묻지 않고 거절
     '--no-session-persistence',
     '--append-system-prompt', o.systemAppend,
@@ -42,7 +48,7 @@ export async function runClaudeAgent(o: AgentRun): Promise<{ text: string; isErr
 
   let buf = '';
   let stderr = '';
-  let final: { text: string; isError: boolean; costUsd?: number } | null = null;
+  let final: AgentResult | null = null;
   let startError: Error | null = null;
   child.stderr.on('data', (d) => (stderr += d));
   child.stdout.on('data', (d: Buffer) => {
@@ -58,12 +64,12 @@ export async function runClaudeAgent(o: AgentRun): Promise<{ text: string; isErr
       } catch {
         continue;
       }
-      if (msg.type === 'system' && msg.subtype === 'init') {
-        const mine = (msg.mcp_servers ?? []).find((s: { name: string }) => s.name === o.mcpServer);
+      if (msg.type === 'system' && msg.subtype === 'init' && o.mcp) {
+        const mine = (msg.mcp_servers ?? []).find((s: { name: string }) => s.name === o.mcp!.server);
         // 도구 없이 시작하면 AI 가 도구를 흉내 낸 글만 쓰고 끝나므로, 연결이 안 됐으면 바로 멈춘다
         if (!mine || mine.status !== 'connected') {
           child.kill();
-          startError = new Error(`${o.mcpServer} MCP 서버에 연결하지 못했습니다 (${mine?.status ?? '없음'}). 브라우저가 떠 있는지 확인하고 다시 시도해 주세요.`);
+          startError = new Error(`${o.mcp.server} MCP 서버에 연결하지 못했습니다 (${mine?.status ?? '없음'}). 브라우저가 떠 있는지 확인하고 다시 시도해 주세요.`);
         }
       } else if (msg.type === 'assistant') {
         for (const c of msg.message?.content ?? []) {
@@ -86,4 +92,21 @@ export async function runClaudeAgent(o: AgentRun): Promise<{ text: string; isErr
   if (startError) throw startError;
   if (!final) throw new Error(`Claude 실행이 결과 없이 끝났습니다 (코드 ${code}). ${stderr.slice(-500)}`);
   return final;
+}
+
+/** 결과 글에서 JSON 을 꺼낸다: 마지막 ```json 블록, 없으면 가장 바깥 { … } */
+export function extractJson<T>(text: string): T {
+  const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+  const candidates = blocks.length ? blocks.reverse() : [];
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
+  for (const c of candidates) {
+    try {
+      return JSON.parse(c) as T;
+    } catch {
+      /* 다음 후보 */
+    }
+  }
+  throw new Error(`AI 응답에서 JSON 을 찾지 못했습니다: ${text.slice(0, 200)}`);
 }

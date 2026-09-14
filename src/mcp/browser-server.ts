@@ -10,7 +10,7 @@ import { loadSettings } from '../config';
 import { paths } from '../paths';
 
 type Args = Record<string, unknown>;
-type Tool = { description: string; props?: Record<string, { type: string; description: string }>; required?: string[]; run: (a: Args) => Promise<string | { image: Buffer }> };
+type Tool = { description: string; props?: Record<string, Record<string, unknown>>; required?: string[]; run: (a: Args) => Promise<string | { image: Buffer }> };
 
 export async function main(): Promise<void> {
   const settings = loadSettings();
@@ -42,6 +42,7 @@ export async function main(): Promise<void> {
   const TOOLS: Record<string, Tool> = {
     snapshot: { description: '현재 창의 입력칸과 버튼 목록 (번호, 라벨, 현재 값, 선택지). 화면이 바뀌면 다시 보세요.', run: () => tools.snapshot() },
     screenshot: { description: '현재 창의 화면 이미지. 배치나 팝업 모양을 봐야 할 때만 쓰세요.', run: async () => ({ image: await tools.screenshot() }) },
+    page_text: { description: '현재 창의 보이는 글 전체. 문항 글이나 글자수 안내처럼 입력칸 라벨이 아닌 글을 읽을 때 씁니다.', run: () => tools.pageText() },
     fill: {
       description: '빈 칸에 글자를 넣습니다. 이미 값이 있는 칸은 바꾸지 않습니다. 날짜는 칸의 placeholder 형식에 맞춰 넣으세요.',
       props: { ref, value: { type: 'string', description: '넣을 값' } },
@@ -109,6 +110,23 @@ export async function main(): Promise<void> {
       props: { question: { type: 'string', description: '질문' } },
       required: ['question'],
       run: async (a) => `사용자 답: ${await bridge.ask(str(a, 'question'))}`,
+    },
+    set_questions: {
+      description: '찾은 자기소개서 문항을 기록합니다 (문항 찾기 단계에서만). questions 는 [{id, ref, question, maxChars, minChars, unit(chars|chars_no_space|bytes), note}] 입니다.',
+      props: {
+        role: { type: 'string', description: '지원 직무명 (페이지에 보이면)' },
+        questions: { type: 'array', description: '문항 목록', items: { type: 'object' } },
+      },
+      required: ['questions'],
+      run: async (a) => {
+        if (!Array.isArray(a.questions) || !a.questions.length) throw new ToolError('questions 에 문항이 하나 이상 있어야 합니다');
+        for (const q of a.questions as Record<string, unknown>[]) {
+          if (typeof q.question !== 'string' || !q.question.trim()) throw new ToolError('문항마다 question 글이 필요합니다');
+          if (typeof q.ref !== 'string' || !q.ref) throw new ToolError('문항마다 답을 넣을 입력칸 ref 가 필요합니다');
+        }
+        await bridge.event({ type: 'questions', role: String(a.role ?? ''), questions: a.questions as unknown[] });
+        return `문항 ${a.questions.length}개를 기록했습니다.`;
+      },
     },
     finish: {
       description: '입력을 모두 마쳤을 때 호출합니다. 요약을 남기면 끝납니다.',

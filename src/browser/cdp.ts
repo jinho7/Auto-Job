@@ -47,5 +47,23 @@ export async function connectCdp(cfg: CdpBrowserConfig, timeoutMs = 20_000): Pro
       await new Promise((r) => setTimeout(r, 300));
     }
   }
+  await ensureWindow(cfg.cdp_port);
   return chromium.connectOverCDP(`http://127.0.0.1:${cfg.cdp_port}`);
+}
+
+/**
+ * macOS 에서는 탭을 모두 닫아도 앱이 떠 있다. 창이 하나도 없으면 기본 컨텍스트가 없어 붙을 수 없으므로
+ * 빈 탭을 하나 연다 (Aside 는 새 브라우저 컨텍스트 만들기를 지원하지 않는다).
+ */
+async function ensureWindow(port: number): Promise<void> {
+  const list = (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) })
+    .then((r) => r.json())
+    .catch(() => [])) as { type: string }[];
+  if (list.some((t) => t.type === 'page')) return;
+  await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT', signal: AbortSignal.timeout(5000) }).catch(() => {});
+  for (let i = 0; i < 20; i++) {
+    const again = (await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.json()).catch(() => [])) as { type: string }[];
+    if (again.some((t) => t.type === 'page')) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
 }

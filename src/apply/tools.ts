@@ -120,6 +120,22 @@ export class ApplyTools {
     return text.length > 60_000 ? `${text.slice(0, 60_000)}\n…(너무 길어 잘랐습니다)` : text;
   }
 
+  /** 보이는 글 전체 (문항 글, 글자수 안내처럼 입력칸 라벨이 아닌 글을 읽을 때) */
+  async pageText(): Promise<string> {
+    const parts: string[] = [];
+    for (const f of this.page().frames()) {
+      const t = await f.evaluate('document.body ? document.body.innerText : ""').catch(() => '');
+      if (typeof t === 'string' && t.trim()) parts.push(t.trim());
+    }
+    const text = parts.join('\n\n---\n\n').replace(/\n{3,}/g, '\n\n');
+    return text.length > 30_000 ? `${text.slice(0, 30_000)}\n…(너무 길어 잘랐습니다)` : text;
+  }
+
+  /** 입력칸에 이미 들어 있는 값 (넣은 뒤 확인용) */
+  async valueOf(ref: string): Promise<string> {
+    return (await this.describe(await this.locate(ref))).value;
+  }
+
   async screenshot(): Promise<Buffer> {
     await this.page().bringToFront().catch(() => {});
     return this.page().screenshot({ type: 'jpeg', quality: 60, timeout: 15_000, animations: 'disabled' });

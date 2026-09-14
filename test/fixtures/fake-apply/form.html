@@ -64,9 +64,21 @@ th,td{border:1px solid #ccc;padding:6px;text-align:left} th{background:#f3f3f3;w
 </table>
 
 <h2 class="tit">자기소개서</h2>
-<table>
-  <tr><th>지원동기 (1000자)</th><td><textarea id="q1" rows="5" cols="70" maxlength="1000"></textarea></td></tr>
-</table>
+<div class="essay">
+  <p class="q"><b>1.</b> 가짜회사에 지원한 동기와, 지원 직무에서 발휘할 수 있는 역량을 본인의 경험을 바탕으로 작성해 주세요.</p>
+  <p class="limit">(최소 300자, 최대 600자 / 공백 포함)</p>
+  <textarea id="q1" rows="6" cols="80"></textarea>
+  <div class="count"><span id="c1">0</span> / 600자</div>
+</div>
+<div class="essay">
+  <p class="q"><b>2.</b> 팀으로 일하며 의견 차이를 해결했던 경험을 구체적으로 작성해 주세요.</p>
+  <p class="limit">(500자 이내)</p>
+  <textarea id="q2" rows="6" cols="80"></textarea>
+  <div class="count"><span id="c2">0</span> / 500자</div>
+</div>
+<script>
+for (const i of [1, 2]) document.getElementById('q' + i).addEventListener('input', (e) => (document.getElementById('c' + i).textContent = e.target.value.length));
+</script>
 
 <div style="margin-top:24px">
   <button type="button" onclick="log('임시저장')">임시저장</button>

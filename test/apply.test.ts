@@ -73,6 +73,7 @@ test('리포트: 비워둔 값, 참고사항, 막힌 동작', () => {
     link: 'https://x',
     startedAt: '',
     finishedAt: '',
+    steps: ['basic'],
     summary: '기본정보와 학력을 입력함',
     blanks: [{ field: '성명(영문)', reason: '내 정보에 없음' }],
     notes: ['증명사진 업로드 필요'],
@@ -91,5 +92,5 @@ test('리포트: 비워둔 값, 참고사항, 막힌 동작', () => {
   assert.match(md, /## 막히거나 건너뛴 동작 \(1\)/);
   assert.match(md, /제출은 하지 않았습니다/);
   assert.doesNotMatch(md, /끝까지 마치지 못했습니다/);
-  assert.match(formatApplyReport({ ...r, completed: false }), /⚠️ AI 가 입력을 끝까지 마치지 못했습니다/);
+  assert.match(formatApplyReport({ ...r, completed: false }), /⚠️ AI 가 인적사항 입력을 끝까지 마치지 못했습니다/);
 });

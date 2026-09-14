@@ -1,10 +1,14 @@
-// autojob apply: ① 준비 → ② 로그인 대기(사람) → ③ 인적사항 입력(AI) → 리포트
+// autojob apply: ① 준비 → ② 로그인 대기(사람) → ③ 인적사항 입력(AI) → ④ 자기소개서(문항 찾기 → 작성 → 입력) → 리포트
+// 제출은 하지 않는다. 브라우저 창은 사용자가 검토하도록 그대로 둔다.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BrowserSession } from '../browser/session';
 import { loadSettings, type Settings } from '../config';
-import { runClaudeAgent } from '../llm/claude-cli';
+import { parseLimit } from '../essay/checks';
+import { formatEssays, writeEssays, type EssayResult } from '../essay/pipeline';
+import type { CountUnit, EssayQuestion } from '../essay/types';
+import { runClaudeAgent, type AgentResult } from '../llm/claude-cli';
 import { propText } from '../notion/client';
 import { notionClient } from '../notion/setup';
 import { notify } from '../notify';
@@ -15,9 +19,10 @@ import { ProfileStore } from '../profile/store';
 import { parseNotionId } from '../settings/store';
 import { startBridge, type BridgeEvent } from './bridge';
 import { renderProfileForAgent } from './profile-doc';
-import { targetIdOf } from './tools';
+import { ApplyTools, targetIdOf } from './tools';
 
-export type ApplyTarget = { company: string; link: string; notionPageId?: string; notionUrl?: string };
+export type ApplyTarget = { company: string; link: string; role?: string; notionPageId?: string; notionUrl?: string };
+export type ApplyStep = 'basic' | 'essay';
 
 export async function resolveTarget(input: string, settings: Settings): Promise<ApplyTarget> {
   const t = input.trim();
@@ -28,12 +33,20 @@ export async function resolveTarget(input: string, settings: Settings): Promise<
     const f = settings.notion.fields;
     const link = propText(page.properties[f.link]);
     if (!link) throw new Error(`이 Notion 페이지에 "${f.link}" 값이 없습니다. 지원 링크를 먼저 넣어 주세요.`);
-    return { company: propText(page.properties[f.company]), link, notionPageId: page.id, notionUrl: page.url };
+    return { company: propText(page.properties[f.company]), link, role: propText(page.properties[f.roles]), notionPageId: page.id, notionUrl: page.url };
   }
   if (/^https?:\/\//.test(t)) return { company: '', link: t };
   if (existsSync(t)) return { company: '', link: pathToFileURL(path.resolve(t)).href };
   throw new Error('Notion 페이지 주소, 지원 페이지 주소(https://…), 또는 HTML 파일 경로를 주세요');
 }
+
+export type EssayStepReport = {
+  questions: EssayQuestion[];
+  result?: EssayResult;
+  filled: { id: number; ok: boolean; message: string }[];
+  error?: string;
+  file?: string;
+};
 
 export type ApplyReport = {
   company: string;
@@ -41,13 +54,15 @@ export type ApplyReport = {
   notionUrl?: string;
   startedAt: string;
   finishedAt: string;
+  steps: ApplyStep[];
   summary: string;
   blanks: { field: string; reason: string }[];
   notes: string[];
   actions: Extract<BridgeEvent, { type: 'action' }>[];
   agent: { text: string; isError: boolean; costUsd?: number };
-  /** AI 가 finish 까지 마쳤는지 */
+  /** 인적사항 AI 가 finish 까지 마쳤는지 (인적사항 단계를 건너뛰었으면 true) */
   completed: boolean;
+  essay?: EssayStepReport;
   dir: string;
   screenshot?: string;
 };
@@ -56,11 +71,14 @@ export type ApplyOptions = {
   target: string;
   /** 이미 입력 화면이면 로그인 대기를 건너뛴다 */
   skipLoginWait?: boolean;
+  /** 할 단계 (기본: 인적사항과 자기소개서 모두) */
+  steps?: ApplyStep[];
   ask: (question: string) => Promise<string>;
   log?: (m: string) => void;
 };
 
 const TOOL_ICON: Record<string, string> = { fill: '✏️ ', select: '🔽', check: '☑️ ', click: '👆', press: '⌨️ ', upload: '📎', dialog: '💬' };
+const readPrompt = (name: string) => readFileSync(path.join(paths.prompts, name), 'utf8');
 
 export function buildPrompt(target: ApplyTarget, profileDoc: string, files: string[]): string {
   return [
@@ -79,16 +97,41 @@ export function buildPrompt(target: ApplyTarget, profileDoc: string, files: stri
 }
 
 export function buildSystemPrompt(settings: Settings): string {
-  const base = readFileSync(path.join(paths.prompts, 'fill-basic-info.md'), 'utf8');
+  const base = readPrompt('fill-basic-info.md');
   const extra = settings.apply.extra_rules.filter((r) => r.trim());
   return extra.length ? `${base}\n\n## 사용자가 추가한 규칙\n${extra.map((r) => `- ${r}`).join('\n')}` : base;
 }
 
+/** AI 가 기록한 문항을 정리한다: 번호 매기기, 단위 확인, 문항 글에서 제한 보충 */
+export function normalizeQuestions(raw: unknown[]): EssayQuestion[] {
+  const units: CountUnit[] = ['chars', 'chars_no_space', 'bytes'];
+  return raw
+    .map((r) => r as Record<string, unknown>)
+    .filter((r) => typeof r.question === 'string' && r.question.trim())
+    .map((r, i) => {
+      const fromText = parseLimit(String(r.question));
+      const num = (v: unknown) => (typeof v === 'number' && v > 0 ? Math.round(v) : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined);
+      const maxChars = num(r.maxChars) ?? fromText.maxChars;
+      const minChars = num(r.minChars) ?? fromText.minChars;
+      return {
+        id: i + 1,
+        question: String(r.question).trim(),
+        unit: units.includes(r.unit as CountUnit) ? (r.unit as CountUnit) : fromText.unit,
+        ...(maxChars ? { maxChars } : {}),
+        ...(minChars ? { minChars } : {}),
+        ...(typeof r.ref === 'string' && r.ref ? { ref: r.ref } : {}),
+        ...(typeof r.note === 'string' && r.note.trim() ? { note: r.note.trim() } : {}),
+      };
+    });
+}
+
 export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const log = o.log ?? console.log;
+  const steps: ApplyStep[] = o.steps?.length ? o.steps : ['basic', 'essay'];
   const settings = loadSettings();
   if (settings.llm.backend !== 'claude-cli') throw new Error(`지원서 입력은 지금 claude-cli 연결만 지원합니다 (현재: ${settings.llm.backend}). 설정 → AI 연결에서 바꿔 주세요.`);
   if (settings.browser.driver === 'handoff') throw new Error('handoff 브라우저 설정에서는 자동 입력을 할 수 없습니다. 설정 → 브라우저에서 Aside 나 Chrome 을 골라 주세요.');
+  const driver = settings.browser.driver;
 
   // 내 정보
   const store = new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema));
@@ -108,7 +151,10 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const notes: string[] = [];
   const actions: ApplyReport['actions'] = [];
   let summary = '';
+  let found: { role: string; questions: unknown[] } | null = null;
   let bridge: Awaited<ReturnType<typeof startBridge>> | null = null;
+  let agent: AgentResult = { text: '', isError: false, costUsd: 0 };
+  let essay: EssayStepReport | undefined;
   try {
     await session.goto(target.link);
     await session.bringToFront();
@@ -121,7 +167,6 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       if (a.trim().toLowerCase() === 'q') throw new Error('사용자가 중단했습니다');
     }
 
-    // ③ 인적사항 입력 — AI
     bridge = await startBridge({
       ask: async (q) => {
         notify('Auto-Job 지원서', '확인이 필요합니다 — 터미널을 봐 주세요');
@@ -136,9 +181,11 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
           log(`   📝 ${e.text}`);
         } else if (e.type === 'action') {
           actions.push(e);
-          log(`   ${TOOL_ICON[e.tool] ?? '•'} ${e.value ? `${e.value} — ` : ''}${e.message}`);
+          log(`   ${TOOL_ICON[e.tool] ?? '•'} ${e.value ? `${e.value.slice(0, 40)} — ` : ''}${e.message}`);
         } else if (e.type === 'finish') {
-          summary = e.summary;
+          summary ||= e.summary;
+        } else if (e.type === 'questions') {
+          found = { role: e.role, questions: e.questions };
         }
       },
     });
@@ -158,18 +205,69 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       }),
       { mode: 0o600 },
     );
-    log('③ AI 가 인적사항을 입력합니다 (자기소개서 전까지, 제출 버튼은 막혀 있음)');
-    const agent = await runClaudeAgent({
-      prompt: buildPrompt(target, profileDoc, files),
-      systemAppend: buildSystemPrompt(settings),
-      mcpConfigPath: mcpConfig,
-      mcpServer: 'autojob',
-      model: settings.apply.model || undefined,
-      cwd: dir,
-      onEvent: (e) => {
-        if (e.type === 'text') log(`   💭 ${e.text.replace(/\s+/g, ' ').slice(0, 200)}`);
-      },
-    });
+    const browserAgent = (prompt: string, system: string) =>
+      runClaudeAgent({
+        prompt,
+        systemAppend: system,
+        mcp: { configPath: mcpConfig, server: 'autojob' },
+        model: settings.apply.model || undefined,
+        cwd: dir,
+        onEvent: (e) => {
+          if (e.type === 'text') log(`   💭 ${e.text.replace(/\s+/g, ' ').slice(0, 200)}`);
+        },
+      });
+
+    // ③ 인적사항 입력 — AI
+    if (steps.includes('basic')) {
+      log('③ AI 가 인적사항을 입력합니다 (자기소개서 전까지, 제출 버튼은 막혀 있음)');
+      agent = await browserAgent(buildPrompt(target, profileDoc, files), buildSystemPrompt(settings));
+    }
+
+    // ④ 자기소개서 — 문항 찾기(AI+브라우저) → 작성(AI+웹) → 입력(코드)
+    if (steps.includes('essay') && !agent.isError) {
+      essay = { questions: [], filled: [] };
+      try {
+        log('④ 자기소개서 문항을 찾습니다');
+        const ex = await browserAgent(
+          `지원 회사: ${target.company || '(모름)'}\n지원 페이지: ${target.link}\n\n이 지원서의 자기소개서 문항을 찾아 set_questions 로 기록하고 finish 하세요. 아무것도 입력하지 마세요.`,
+          readPrompt('essay-extract.md'),
+        );
+        agent.costUsd = (agent.costUsd ?? 0) + (ex.costUsd ?? 0);
+        const got = found as { role: string; questions: unknown[] } | null;
+        essay.questions = normalizeQuestions(got?.questions ?? []);
+        if (!essay.questions.length) throw new Error(ex.isError ? ex.text : '자기소개서 문항을 찾지 못했습니다');
+        log(`   문항 ${essay.questions.length}개: ${essay.questions.map((q) => `${q.id}번${q.maxChars ? `(${q.maxChars}자)` : ''}`).join(', ')}`);
+
+        essay.result = await writeEssays(
+          { company: target.company, role: got?.role || target.role || '', postingUrl: target.link, questions: essay.questions },
+          { settings, profile: store.toJSON(), schema: store.schema, cwd: dir, log },
+        );
+        essay.file = path.join(dir, 'essays.md');
+        writeFileSync(essay.file, formatEssays(essay.result));
+
+        log('   ⌨️  답변을 입력합니다');
+        const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir);
+        try {
+          for (const q of essay.questions) {
+            const text = essay.result.answers.find((a) => a.id === q.id)?.text.trim() ?? '';
+            if (!q.ref || !text) {
+              essay.filled.push({ id: q.id, ok: false, message: !q.ref ? '입력칸을 찾지 못함' : '답변 없음' });
+              continue;
+            }
+            const msg = await tools.fill(q.ref, text).catch((e) => `실패: ${(e as Error).message}`);
+            const now = await tools.valueOf(q.ref).catch(() => '');
+            const ok = now.trim() === text;
+            essay.filled.push({ id: q.id, ok, message: ok ? `입력함 (${[...now].length}자)` : now.trim() ? `${msg}${now.trim() !== text ? ' — 들어간 글이 답변과 다릅니다 (사이트가 자르거나 이미 값이 있었음)' : ''}` : msg });
+            log(`   ${ok ? '✅' : '⚠️ '} ${q.id}번 ${essay.filled.at(-1)!.message}`);
+          }
+        } finally {
+          await tools.close();
+        }
+      } catch (e) {
+        essay.error = (e as Error).message;
+        log(`   ❌ 자기소개서: ${essay.error}`);
+      }
+    }
 
     // 결과
     let screenshot: string | undefined = path.join(dir, 'screenshot.png');
@@ -180,18 +278,21 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       notionUrl: target.notionUrl,
       startedAt,
       finishedAt: new Date().toISOString(),
+      steps,
       summary: summary || (agent.isError ? `AI 가 끝까지 마치지 못했습니다: ${agent.text}` : agent.text),
-      completed: !!summary && !agent.isError,
       blanks,
       notes,
       actions,
       agent,
+      completed: steps.includes('basic') ? !!summary && !agent.isError : true,
+      essay,
       dir,
       screenshot,
     };
     writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 1));
     writeFileSync(path.join(dir, 'report.md'), formatApplyReport(report));
-    notify('Auto-Job 지원서', report.completed ? '인적사항 입력을 마쳤습니다 — 검토해 주세요' : '입력을 끝까지 마치지 못했습니다 — 리포트를 확인해 주세요');
+    const essayOk = !essay || (!essay.error && essay.filled.every((f) => f.ok));
+    notify('Auto-Job 지원서', report.completed && essayOk ? '지원서 작성을 마쳤습니다 — 검토해 주세요' : '끝까지 마치지 못한 부분이 있습니다 — 리포트를 확인해 주세요');
     return report;
   } finally {
     bridge?.server.close();
@@ -202,25 +303,38 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
 export function formatApplyReport(r: ApplyReport): string {
   const filled = r.actions.filter((a) => a.ok && ['fill', 'select', 'check', 'upload'].includes(a.tool)).length;
   const refused = r.actions.filter((a) => !a.ok);
+  const e = r.essay;
   const lines: (string | null)[] = [
-    `# 지원서 인적사항 입력 — ${r.company || r.link}`,
+    `# 지원서 작성 — ${r.company || r.link}`,
     '',
-    r.completed ? null : '> ⚠️ AI 가 입력을 끝까지 마치지 못했습니다. 아래 요약을 보고 빈 칸을 직접 확인해 주세요.',
+    r.completed ? null : '> ⚠️ AI 가 인적사항 입력을 끝까지 마치지 못했습니다. 아래 요약을 보고 빈 칸을 직접 확인해 주세요.',
     r.completed ? null : '',
     `- 지원 페이지: ${r.link}`,
     r.notionUrl ? `- Notion: ${r.notionUrl}` : null,
-    `- 입력한 칸: ${filled}개`,
-    r.agent.costUsd != null ? `- AI 사용량: $${r.agent.costUsd.toFixed(3)}` : null,
+    r.steps.includes('basic') ? `- 인적사항 입력한 칸: ${filled}개` : null,
+    e ? `- 자기소개서: ${e.error ? `실패 — ${e.error}` : `${e.filled.filter((f) => f.ok).length}/${e.questions.length}문항 입력`}` : null,
+    r.agent.costUsd || e?.result?.costUsd ? `- AI 사용량: $${((r.agent.costUsd ?? 0) + (e?.result?.costUsd ?? 0)).toFixed(3)}` : null,
+    e?.file ? `- 자기소개서 전문: ${e.file}` : null,
     r.screenshot ? `- 화면: ${r.screenshot}` : null,
-    '',
-    '## 요약',
-    r.summary || '(없음)',
+    ...(r.steps.includes('basic') ? ['', '## 인적사항 요약', r.summary || '(없음)'] : []),
     '',
     `## 비워둔 Value 값 (${r.blanks.length})`,
     ...(r.blanks.length ? r.blanks.map((b) => `- ${b.field}: ${b.reason}`) : ['- 없음']),
     '',
     `## 참고사항 (${r.notes.length})`,
     ...(r.notes.length ? r.notes.map((n) => `- ${n}`) : ['- 없음']),
+    ...(e && e.questions.length
+      ? [
+          '',
+          '## 자기소개서',
+          ...e.questions.map((q) => {
+            const c = e.result?.checks.find((x) => x.id === q.id);
+            const f = e.filled.find((x) => x.id === q.id);
+            const problems = [...(c?.issues ?? []).map((i) => `❌ ${i}`), ...(c?.warnings ?? []).map((w) => `⚠️ ${w}`)];
+            return `- ${q.id}. ${q.question.slice(0, 60)}${q.question.length > 60 ? '…' : ''} — ${f ? f.message : '입력 안 함'}${problems.length ? `\n  ${problems.join('\n  ')}` : ''}`;
+          }),
+        ]
+      : []),
     ...(refused.length ? ['', `## 막히거나 건너뛴 동작 (${refused.length})`, ...refused.map((a) => `- ${a.tool}: ${a.message}`)] : []),
     '',
     '> 제출은 하지 않았습니다. 브라우저에서 내용을 확인한 뒤 직접 저장/제출해 주세요.',

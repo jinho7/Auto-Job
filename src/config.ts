@@ -89,6 +89,10 @@ export const settingsSchema = z.object({
     forbid_middle_dot: z.boolean(),
     blind: z.boolean(),
     banned_phrases: z.array(z.string()).default([]),
+    /** 자기소개서를 쓸 AI 모델. 비우면 Claude Code 기본 모델 */
+    model: z.string().default(''),
+    /** 검토 후 고쳐 쓰기 최대 횟수 */
+    max_revisions: z.number().int().min(0).max(3).default(1),
   }),
   company_types: z.record(z.string(), companyType).transform((types) =>
     Object.fromEntries(
