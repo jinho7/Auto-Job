@@ -66,7 +66,8 @@ let view = (() => {
 })();
 
 const SETTINGS_PAGES = [
-  ['검색 조건', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태']]],
+  ['실행', [['collect', '공고 수집']]],
+  ['검색 조건', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태'], ['roles', '직무 태그 규칙']]],
   ['기업 필터', [['companies', '기업 구분'], ['overrides', '회사 직접 지정']]],
   ['작성', [['essay', '자기소개서 문체']]],
   ['연결', [['notion', 'Notion'], ['browser', '브라우저'], ['llm', 'AI 연결'], ['guard', '제출 차단 문구']]],
@@ -352,10 +353,13 @@ function settingsPage(id) {
       return page('검색 키워드', '채용 사이트에서 이 키워드로 공고를 검색합니다.', card(null, chipEditor('collect.keywords', { emptyText: '아직 키워드가 없습니다' })));
 
     case 'sources':
-      return page('수집 사이트', '공고를 모을 사이트를 고릅니다.', card(null, h('div', { class: 'checks' },
-        Object.entries(s.collect.sources).map(([k, on]) => h('label', null,
-          h('input', { type: 'checkbox', checked: on, onchange: (e) => setSetting('collect.sources', { ...state.settings.collect.sources, [k]: e.target.checked }) }),
-          state.meta.sources[k] || k)))));
+      return sourcesPage();
+
+    case 'roles':
+      return rolesPage();
+
+    case 'collect':
+      return collectPage();
 
     case 'employment': {
       const cur = s.collect.employment_types;
@@ -375,15 +379,23 @@ function settingsPage(id) {
 
     case 'companies': {
       const types = s.company_types;
-      const setType = (name, key, val) => setSetting('company_types', { ...state.settings.company_types, [name]: { ...state.settings.company_types[name], [key]: val } });
+      const setType = (name, key, val) => setSetting(`company_types.${name}.${key}`, val);
       return page('기업 구분', `자소설닷컴 달력 필터처럼 켜고 끕니다. "작성중 표시"를 켠 구분은 Notion에 "${s.notion.status_options.priority}" 상태로 등록됩니다.`,
         card(null, h('table', { class: 'grid' },
-          h('thead', null, h('tr', null, h('th', null, '구분'), h('th', { class: 'center' }, '공고 모으기'), h('th', { class: 'center' }, '작성중 표시'))),
+          h('thead', null, h('tr', null, h('th', null, '구분'), h('th', { class: 'center' }, '공고 모으기'), h('th', { class: 'center' }, '작성중 표시'), h('th', null, '판정 기준'))),
           h('tbody', null, Object.entries(types).map(([name, t]) => h('tr', null,
             h('td', null, name),
             h('td', { class: 'center' }, h('input', { type: 'checkbox', 'aria-label': `${name} 모으기`, checked: t.include, onchange: (e) => setType(name, 'include', e.target.checked) })),
             h('td', { class: 'center' }, h('input', { type: 'checkbox', 'aria-label': `${name} 작성중`, checked: t.priority, onchange: (e) => setType(name, 'priority', e.target.checked) })),
+            h('td', { class: 'muted small' }, `회사 ${t.companies.length}개 · 단어 ${t.name_keywords.length}개`),
           ))),
+        )),
+        h('div', { class: 'notice' }, '어떤 구분인지는 ① 회사 직접 지정 ② 아래 구분별 회사 목록 ③ 회사명에 들어간 단어 ④ 사이트가 알려준 기업 규모(자소설 기업분류, 사람인 기업형태) 순서로 봅니다. 여러 구분에 걸리면 하나라도 "모으기"면 모으고, 하나라도 "작성중"이면 작성중으로 둡니다. 어느 구분인지 알 수 없는 회사는 모읍니다.'),
+        ...Object.keys(types).map((name) => card(name,
+          h('p', { class: 'muted small', style: 'margin-top:0' }, '이 구분으로 볼 회사'),
+          chipEditor(`company_types.${name}.companies`, { placeholder: '회사명', emptyText: '(없음)' }),
+          h('p', { class: 'muted small' }, '회사명에 이 단어가 들어가면 이 구분 (영문 약어는 단어 단위로 찾습니다)'),
+          chipEditor(`company_types.${name}.name_keywords`, { placeholder: '예: 은행, 증권', emptyText: '(없음)' }),
         )),
       );
     }
@@ -452,6 +464,167 @@ function secretInput(key, { onSaved } = {}) {
       st.set && !st.fromEnv ? h('button', { class: 'btn danger', type: 'button', onclick: async () => { if (confirm('삭제할까요?')) { await run(() => api('POST', '/api/secrets/set', { key, value: '' }), '삭제했습니다'); render(); } } }, '삭제') : null),
     status,
   );
+}
+
+// ─── 수집 사이트 ────────────────────────────────────────
+const STATUS_BADGE = { ok: ['ok', '사용 가능'], planned: ['warn', '준비 중'], blocked: ['bad', '수집 안 함'] };
+
+function sourcesPage() {
+  const s = state.settings;
+  const rows = state.meta.collectors.map((c) => {
+    const [cls, label] = STATUS_BADGE[c.status];
+    return h('tr', null,
+      h('td', { class: 'center' }, h('input', {
+        type: 'checkbox', 'aria-label': `${c.label} 사용`, checked: c.status === 'ok' && !!s.collect.sources[c.id], disabled: c.status !== 'ok' ? true : null,
+        onchange: (e) => setSetting(`collect.sources.${c.id}`, e.target.checked),
+      })),
+      h('td', null, c.label, c.method === 'browser' ? h('span', { class: 'muted small' }, ' · 자동화 브라우저') : null),
+      h('td', null, h('span', { class: `badge ${cls}` }, label)),
+      h('td', { class: 'muted small' }, c.note),
+    );
+  });
+
+  const dutyBox = h('div');
+  const drawDuty = () => dutyBox.replaceChildren(
+    chipEditor('collect.jasoseol.duty_groups', { placeholder: '직무 분류 이름', emptyText: '(비어 있음 — 검색 키워드로 직무명을 거릅니다)' }),
+    h('button', { class: 'btn', type: 'button', style: 'margin-top:8px', onclick: async (e) => {
+      e.target.disabled = true;
+      e.target.textContent = '자동화 브라우저로 불러오는 중…';
+      try {
+        const { groups } = await run(() => api('GET', '/api/collect/jasoseol-duty-groups'));
+        const cur = new Set(state.settings.collect.jasoseol.duty_groups);
+        const byParent = (pid) => groups.filter((g) => g.parent === pid);
+        const tree = (g, depth) => [
+          h('label', { style: `display:flex;gap:6px;padding:2px 0 2px ${depth * 18}px;cursor:pointer` }, h('input', { type: 'checkbox', value: g.name, checked: cur.has(g.name) }), g.name),
+          ...byParent(g.id).flatMap((c) => tree(c, depth + 1)),
+        ];
+        const list = h('div', { style: 'max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:8px' }, byParent(null).flatMap((g) => tree(g, 0)));
+        dutyBox.replaceChildren(
+          h('p', { class: 'muted small', style: 'margin:0' }, '상위 분류를 고르면 하위 분류도 포함됩니다.'),
+          list,
+          h('div', { class: 'row', style: 'margin-top:8px' },
+            h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+              const picked = [...list.querySelectorAll('input:checked')].map((i) => i.value);
+              await setSetting('collect.jasoseol.duty_groups', picked, `직무 분류 ${picked.length}개 저장`);
+              drawDuty();
+            } }, '저장'),
+            h('button', { class: 'btn', type: 'button', onclick: drawDuty }, '취소')),
+        );
+      } catch {
+        drawDuty();
+      }
+    } }, '자소설닷컴 직무 분류 목록에서 고르기'),
+  );
+  drawDuty();
+
+  return page('수집 사이트', '공고를 모을 사이트와 수집 방식을 정합니다. 모든 사이트는 robots.txt 가 허용하는 범위에서, 정직한 이름으로, 요청 사이에 간격을 두고 가져옵니다.',
+    card(null, h('table', { class: 'grid' },
+      h('thead', null, h('tr', null, h('th', { class: 'center' }, '사용'), h('th', null, '사이트'), h('th', null, '상태'), h('th', null, '설명'))),
+      h('tbody', null, rows))),
+    card('수집 범위',
+      textSetting('마감 기간 (일)', 'collect.lookahead_days', { type: 'number', hint: '마감이 오늘부터 이 기간 안인 공고만 모읍니다. 상시 채용은 포함' }),
+      textSetting('키워드당 최대 공고 수', 'collect.max_per_keyword', { type: 'number', hint: '사람인 검색 결과를 이만큼까지 봅니다' }),
+      textSetting('요청 간격 (ms)', 'collect.request_delay_ms', { type: 'number', hint: '같은 사이트에 보내는 요청 사이 간격. 사이트에 부담을 주지 않도록 1500 이상을 권장합니다' }),
+    ),
+    card('자소설닷컴 직무 분류', h('p', { class: 'muted small', style: 'margin-top:0' }, '자소설닷컴 채용 달력에서 이 직무 분류의 공고만 가져옵니다.'), dutyBox),
+  );
+}
+
+// ─── 직무 태그 규칙 ─────────────────────────────────────
+function rolesPage() {
+  const box = h('div', null, h('p', { class: 'muted' }, 'Notion DB의 직무 태그를 불러오는 중…'));
+  const tokens = (tag) => tag.split(/[\s/(),·|]+/).map((t) => t.trim()).filter((t) => t.length >= 2 && !['개발자', '개발', '엔지니어', '담당', '담당자', '직무', '기타', '분야'].includes(t));
+  if (state.secrets.NOTION_TOKEN.set && state.settings.notion.data_source_id) {
+    api('GET', '/api/notion/options').then((o) => {
+      box.replaceChildren(...(o.roles.length ? o.roles.map((tag) => {
+        const def = tokens(tag);
+        return h('div', { class: 'field' },
+          h('label', null, tag),
+          chipEditor(`notion.role_rules.${tag}`, { placeholder: '단어 추가', emptyText: def.length ? `(기본: ${def.join(', ')})` : '(기본 단어 없음 — 자동으로 달리지 않습니다)' }),
+        );
+      }) : [h('p', { class: 'muted' }, 'DB에 직무 태그가 없습니다.')]));
+    }).catch((e) => box.replaceChildren(h('div', { class: 'notice bad' }, e.message)));
+  } else {
+    box.replaceChildren(h('div', { class: 'notice' }, '먼저 Notion 을 연결하고 DB를 골라 주세요 (연결 → Notion).'));
+  }
+  return page('직무 태그 규칙', '공고 제목과 사이트의 직무명에 이 단어가 있으면 Notion 직무 태그를 답니다. 단어를 적지 않은 태그는 태그 이름의 단어로 판단합니다. 새 태그는 만들지 않습니다.',
+    card(null, box));
+}
+
+// ─── 공고 수집 실행 ─────────────────────────────────────
+let lastCollect = null;
+
+function collectPage() {
+  const s = state.settings;
+  const usable = state.meta.collectors.filter((c) => c.status === 'ok');
+  const picks = h('div', { class: 'checks' }, usable.map((c) => h('label', null, h('input', { type: 'checkbox', value: c.id, checked: !!s.collect.sources[c.id] }), c.label)));
+  const limit = h('input', { type: 'number', min: '1', placeholder: '제한 없음', style: 'max-width:140px' });
+  const out = h('div');
+  if (lastCollect) drawCollect(out, lastCollect);
+
+  const start = async (dryRun, btn) => {
+    const sources = [...picks.querySelectorAll('input:checked')].map((i) => i.value);
+    if (!sources.length) return toast('수집할 사이트를 골라 주세요', true);
+    if (!dryRun && !confirm('수집한 공고를 Notion 에 등록할까요? (중복은 넣지 않습니다)')) return;
+    const buttons = btn.parentElement.querySelectorAll('button');
+    buttons.forEach((b) => (b.disabled = true));
+    const label = btn.textContent;
+    btn.textContent = '수집 중… (사이트 수에 따라 몇 분 걸릴 수 있습니다)';
+    try {
+      lastCollect = await run(() => api('POST', '/api/collect/run', { dryRun, sources, limit: Number(limit.value) || undefined }));
+      drawCollect(out, lastCollect);
+    } finally {
+      buttons.forEach((b) => (b.disabled = false));
+      btn.textContent = label;
+    }
+  };
+
+  const warn = [];
+  if (!s.collect.keywords.length && !s.collect.jasoseol.duty_groups.length) warn.push('검색 키워드가 없습니다 (검색 조건 → 검색 키워드).');
+  if (!(state.secrets.NOTION_TOKEN.set && s.notion.data_source_id)) warn.push('Notion 이 연결되지 않아 미리보기만 할 수 있습니다.');
+
+  return page('공고 수집', '켜 둔 사이트에서 공고를 모아 경력직, 고용형태, 마감, 기업 구분으로 거르고, 실제 지원 페이지를 확인한 뒤 Notion 에 등록합니다. 중복은 넣지 않습니다.',
+    warn.length ? h('div', { class: 'notice' }, h('ul', { style: 'margin:0' }, warn.map((w) => h('li', null, w)))) : null,
+    card(null,
+      h('div', { class: 'field' }, h('label', null, '사이트'), picks),
+      h('div', { class: 'field' }, h('label', null, '최대 건수'), limit, h('div', { class: 'hint' }, '처음에는 5건 정도로 시험해 보세요')),
+      h('div', { class: 'row', style: 'margin-top:10px' },
+        h('button', { class: 'btn', type: 'button', onclick: (e) => start(true, e.target) }, '미리보기 (Notion 에 쓰지 않음)'),
+        h('button', { class: 'btn primary', type: 'button', onclick: (e) => start(false, e.target) }, '수집하고 Notion 에 등록')),
+    ),
+    out,
+  );
+}
+
+function drawCollect(box, r) {
+  const rep = r.report;
+  const section = (outcome, title) => {
+    const xs = rep.items.filter((i) => i.outcome === outcome);
+    if (!xs.length) return null;
+    return card(`${title} (${xs.length})`, h('div', { style: 'overflow-x:auto' }, h('table', { class: 'grid' },
+      h('thead', null, h('tr', null, h('th', null, '마감'), h('th', null, '회사 / 공고'), h('th', null, '구분 · 직무 · 분류'), h('th', null, '링크'))),
+      h('tbody', null, xs.map((i) => h('tr', null,
+        h('td', { style: 'white-space:nowrap' }, i.deadline),
+        h('td', null, h('strong', null, i.company), h('div', { class: 'muted small' }, i.title), i.reason ? h('div', { class: 'small', style: 'color:var(--warn)' }, i.reason) : null, ...(i.dropped || []).map((d) => h('div', { class: 'small', style: 'color:var(--warn)' }, d))),
+        h('td', { class: 'small' }, [i.companyTypes?.join('/'), i.roles?.join(', '), i.employment?.join(', ')].filter(Boolean).join(' · ') || '—'),
+        h('td', { class: 'small', style: 'white-space:nowrap' },
+          i.notionUrl ? h('div', null, h('a', { href: i.notionUrl, target: '_blank', rel: 'noopener' }, 'Notion')) : null,
+          i.applyUrl ? h('div', null, h('a', { href: i.applyUrl, target: '_blank', rel: 'noopener' }, '지원 페이지')) : null,
+          h('div', null, h('a', { href: i.sourceUrl, target: '_blank', rel: 'noopener' }, '원문'))),
+      ))))));
+  };
+  box.replaceChildren(...[
+    card(rep.dryRun ? '미리보기 결과' : '수집 결과',
+      h('ul', { class: 'result' }, rep.sources.map((s) => h('li', null, `${s.error ? '❌' : '✅'} ${s.label}: ${s.error || `${s.count}건`}`))),
+      h('div', { class: 'chips', style: 'margin-top:10px' }, Object.entries(rep.counts).map(([k, v]) => h('span', { class: 'chip', style: 'padding-right:10px' }, `${r.labels[k] || k} ${v}`))),
+      h('p', { class: 'muted small' }, `리포트 파일: ${r.dir}`)),
+    section('registered', '✅ Notion 에 등록'),
+    section('would_register', '📝 등록 대상'),
+    section('no_link', '🔗 지원 페이지를 찾지 못해 뺀 공고'),
+    section('error', '❌ 오류'),
+    section('duplicate', '⏭️ 이미 Notion 에 있음'),
+    section('company', '🏢 기업 구분으로 뺀 공고'),
+  ].filter(Boolean));
 }
 
 // ─── Notion ─────────────────────────────────────────────

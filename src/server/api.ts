@@ -5,7 +5,11 @@ import { BrowserSession } from '../browser/session';
 import { browserSelfTest } from '../browser/selftest';
 import { loadSettings } from '../config';
 import { NotionClient } from '../notion/client';
+import { COLLECTORS } from '../collectors';
+import { loadDutyGroups } from '../collectors/jasoseol';
 import { parseDeadline, type JobPosting } from '../jobs/model';
+import { OUTCOME_LABEL } from '../pipeline/collect';
+import { collectNow } from '../pipeline/run';
 import { bootstrapDatabase } from '../notion/bootstrap';
 import { FIELD_SPEC, optionsOf } from '../notion/mapping';
 import { applySuggestions, checkCurrent, INTEGRATIONS_URL, jobWriter, listDatabases, notionClient, selectDatabase, SETUP_STEPS } from '../notion/setup';
@@ -16,6 +20,8 @@ import { ProfileStore } from '../profile/store';
 import { SECRET_KEYS, secretStatus, setSecret, type SecretKey } from '../secrets';
 import { SOURCE_LABELS, STANDARD_EMPLOYMENT } from '../settings/editor';
 import { parseNotionId, SettingsStore } from '../settings/store';
+
+let collectRunning = false;
 
 const profileStore = () => new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema));
 const settingsStore = () => new SettingsStore(paths.settings);
@@ -34,6 +40,7 @@ export function state() {
       sources: SOURCE_LABELS,
       employment: STANDARD_EMPLOYMENT,
       notionFields: FIELD_SPEC,
+      collectors: COLLECTORS.map((c) => ({ id: c.id, label: c.label, status: c.status, note: c.note, method: c.method })),
       integrationsUrl: INTEGRATIONS_URL,
       setupSteps: SETUP_STEPS,
       paths: { settings: paths.settings, profile: paths.profileMe, files: profile.filesDir },
@@ -154,6 +161,33 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
     const roles = (profileStore().get('target.job_roles') as string[] | undefined) ?? [];
     const created = await bootstrapDatabase(notionClient(), settingsStore(), parent, String(b.title || '서류 제출 자료'), roles);
     return { info: `DB를 만들고 연결했습니다`, url: created.url, roles, ...state() };
+  },
+
+  // ── 공고 수집 ──
+  'GET /api/collect/jasoseol-duty-groups': async () => {
+    const session = await BrowserSession.open(loadSettings());
+    try {
+      const groups = await loadDutyGroups(session.page);
+      return { groups: groups.map((g) => ({ id: g.id, name: g.name, category: g.category, parent: g.group_id })) };
+    } finally {
+      await session.detach({ closeTab: true });
+    }
+  },
+  'POST /api/collect/run': async (b) => {
+    if (collectRunning) throw new Error('이미 수집 중입니다. 끝날 때까지 기다려 주세요.');
+    collectRunning = true;
+    const log: string[] = [];
+    try {
+      const { report, dir } = await collectNow({
+        dryRun: b.dryRun !== false,
+        sources: Array.isArray(b.sources) && b.sources.length ? b.sources.map(String) : undefined,
+        limit: typeof b.limit === 'number' && b.limit > 0 ? b.limit : undefined,
+        log: (m) => log.push(m),
+      });
+      return { report, dir, log, labels: OUTCOME_LABEL };
+    } finally {
+      collectRunning = false;
+    }
   },
 
   // ── 브라우저 ──

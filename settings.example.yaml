@@ -73,16 +73,17 @@ notion:
     - 프로젝트 및 동아리 작성 여부
     - 제출 자료 여부
   timezone_offset: "+09:00"    # 마감 시간의 시간대
+  role_rules: {}               # 직무 태그 → 공고에 이 단어가 있으면 태그. 적지 않은 태그는 태그 이름의 단어로 판단
 
 # ─── 공고 수집 ────────────────────────────────────────────
 collect:
-  sources:
-    saramin: true
-    jobkorea: true
-    wanted: true
-    incruit: true
-    catch: true
-    jasoseol: true
+  sources:                     # 지원 현황은 `autojob collect --help` / 설정 화면 참고
+    saramin: true              # 사람인: 검색 결과 + 상세 (robots.txt 허용 범위)
+    jasoseol: true             # 자소설닷컴: 자동화 브라우저로 채용 달력 (대기업 공채 위주)
+    jobkorea: false            # 준비 중
+    wanted: false              # 준비 중
+    catch: false               # 준비 중
+    incruit: false             # robots.txt 가 모든 자동 접근을 막아 수집하지 않음
   keywords: []                 # 검색 키워드. `autojob settings` → 검색 키워드에서 추가
   employment_types:            # 수집할 고용형태
     - 신입
@@ -91,6 +92,11 @@ collect:
     - 체험형 인턴
     - 계약직
   exclude_experienced: true    # 경력직 제외 ([신입 및 경력]은 포함)
+  lookahead_days: 60           # 마감이 오늘부터 이 기간 안인 공고만 (상시 채용은 포함)
+  max_per_keyword: 100         # 사람인 키워드당 최대 공고 수
+  request_delay_ms: 1500       # 같은 사이트에 보내는 요청 사이 간격 (사이트 부하 방지)
+  jasoseol:
+    duty_groups: []            # 자소설닷컴 직무 분류. 비우면 검색 키워드로 직무명을 거른다
 
 # ─── 자기소개서 문체 ───────────────────────────────────────
 essay:
@@ -102,6 +108,10 @@ essay:
 
 # ─── 기업 구분 (자소설닷컴 달력 필터처럼 켜고 끄기) ─────────
 # include: 수집에 포함할지 / priority: 등록 시 status_options.priority 상태로 둘지
+# companies / name_keywords: 이 구분으로 볼 회사명 / 회사명에 들어가는 단어.
+#   적지 않으면 기본 목록(유명IT, 금융, 공기업, 대기업)을 쓰고, 설정 화면에서 고칠 수 있다.
+# 사이트가 알려주는 기업 규모(자소설 기업분류, 사람인 기업형태)도 함께 쓴다.
+# 여러 구분에 걸리면: 하나라도 포함이면 포함, 하나라도 작성중이면 작성중.
 company_types:
   대기업:   { include: true,  priority: true  }
   유명IT:   { include: true,  priority: true  }

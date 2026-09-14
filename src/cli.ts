@@ -4,7 +4,11 @@ import YAML from 'yaml';
 import { BrowserSession } from './browser/session';
 import { browserSelfTest, formatSelfTest } from './browser/selftest';
 import { loadSettings } from './config';
+import { COLLECTORS } from './collectors';
 import { ensureInitialized } from './init';
+import { notify } from './notify';
+import { formatReport } from './pipeline/collect';
+import { collectNow } from './pipeline/run';
 import { parseDeadline, type JobPosting } from './jobs/model';
 import { bootstrapDatabase } from './notion/bootstrap';
 import { checkCurrent, jobWriter, notionClient } from './notion/setup';
@@ -339,7 +343,32 @@ const notYet = (milestone: string) => () => {
   console.log(`아직 구현되지 않았습니다 (${milestone}). PLAN.md 로드맵 참고.`);
   process.exitCode = 2;
 };
-program.command('collect').description('공고 수집 → Notion 등록').action(notYet('M2'));
+program
+  .command('collect')
+  .description('공고 수집 → 필터 → 중복 제외 → Notion 등록')
+  .option('--dry-run', 'Notion 에 쓰지 않고 등록될 공고만 보여준다')
+  .option('--source <ids>', '이 수집기만 (쉼표로 구분, 예: saramin,jasoseol)')
+  .option('--limit <n>', '등록(미리보기) 최대 건수 — 시험 실행용')
+  .option('--verbose', '중복, 기업 구분 제외 공고도 보여준다')
+  .option('--list-sources', '수집기 목록과 상태만 보여준다')
+  .action(
+    run(async (o: { dryRun?: boolean; source?: string; limit?: string; verbose?: boolean; listSources?: boolean }) => {
+      if (o.listSources) {
+        const s = loadSettings();
+        const mark = { ok: '✅', planned: '🕓', blocked: '⛔' } as const;
+        for (const c of COLLECTORS) console.log(`${mark[c.status]} ${c.id.padEnd(9)} ${c.label} — ${c.note}${c.status === 'ok' ? (s.collect.sources[c.id] ? '  [켜짐]' : '  [꺼짐]') : ''}`);
+        return;
+      }
+      const { report, dir } = await collectNow({
+        dryRun: !!o.dryRun,
+        sources: o.source?.split(',').map((x) => x.trim()).filter(Boolean),
+        limit: o.limit ? Number(o.limit) : undefined,
+      });
+      console.log(`\n${formatReport(report, { verbose: o.verbose })}`);
+      console.log(`\n리포트: ${dir}`);
+      notify('Auto-Job 공고 수집', `${report.dryRun ? '미리보기' : '등록'} ${report.counts.registered ?? report.counts.would_register ?? 0}건`);
+    }),
+  );
 program.command('apply').description('지원서 작성 (임시저장까지)').argument('<target>', 'Notion 페이지 또는 공고 URL').action(notYet('M3~M5'));
 
 await program.parseAsync();

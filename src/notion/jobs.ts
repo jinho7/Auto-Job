@@ -8,10 +8,11 @@ import { optionsOf } from './mapping';
 type N = Settings['notion'];
 
 /** 기업 구분의 priority, 또는 회사 직접 지정이면 "작성중" 쪽 상태 */
-export function decideStatus(settings: Settings, p: Pick<JobPosting, 'company' | 'companyType'>): string {
+export function decideStatus(settings: Settings, p: Pick<JobPosting, 'company' | 'companyType' | 'priority'>): string {
   const priority =
-    settings.overrides.priority.some((c) => sameCompany(c, p.company)) ||
-    (p.companyType ? settings.company_types[p.companyType]?.priority === true : false);
+    p.priority ??
+    (settings.overrides.priority.some((c) => sameCompany(c, p.company)) ||
+      (p.companyType ? settings.company_types[p.companyType]?.priority === true : false));
   return priority ? settings.notion.status_options.priority : settings.notion.status_options.default;
 }
 

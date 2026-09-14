@@ -14,6 +14,8 @@ export type JobPosting = {
   note?: string;
   /** 기업 구분 (settings.company_types 의 키) */
   companyType?: string;
+  /** 기업 구분 판정에서 정한 "작성중" 여부. 없으면 companyType 과 회사 직접 지정으로 판단 */
+  priority?: boolean;
   source?: string;
 };
 
