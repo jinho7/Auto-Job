@@ -7,7 +7,9 @@ import path from 'node:path';
 export type AgentEvent =
   | { type: 'tool'; name: string; input: Record<string, unknown> }
   | { type: 'text'; text: string }
-  | { type: 'result'; text: string; isError: boolean; costUsd?: number; turns?: number };
+  | { type: 'result'; text: string; isError: boolean; costUsd?: number; turns?: number }
+  /** 연결을 바꿈 (한도, 로그인 문제) */
+  | { type: 'switch'; from: string; reason: string };
 
 export type AgentRun = {
   prompt: string;
@@ -16,15 +18,23 @@ export type AgentRun = {
   tools?: string[];
   /** 쓸 MCP 서버 (stdio 로 띄울 명령) */
   mcp?: McpServerSpec;
+  /** 읽어도 되는 폴더 (tools 에 Read/Glob/Grep 이 있을 때). 이 폴더 밖의 파일은 읽지 못한다 */
+  readDirs?: string[];
+  /** 추가 환경 변수 (계정 폴더 등) */
+  env?: Record<string, string>;
   model?: string;
+  /** 추론 성능 (low | medium | high | xhigh | max). 연결 종류에 맞게 바꿔 넘긴다 */
+  effort?: string;
   cwd: string;
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
 };
 
+const FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+
 export type McpServerSpec = { server: string; command: string; args: string[]; env: Record<string, string> };
 
-export type AgentResult = { text: string; isError: boolean; costUsd?: number };
+export type AgentResult = { text: string; isError: boolean; costUsd?: number; /** 실제로 쓴 연결 */ connection?: string };
 
 /** 모든 AI 연결 방식이 같은 모양으로 부른다 (llm/index.ts) */
 export type RunAgent = (o: AgentRun) => Promise<AgentResult>;
@@ -43,7 +53,8 @@ export function writeClaudeMcpConfig(o: McpServerSpec, dir: string): string {
 
 export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
   const tools = o.tools ?? [];
-  const allowed = [...tools, ...(o.mcp ? [`mcp__${o.mcp.server}`] : [])];
+  // 파일 도구는 허용 목록에 넣지 않는다: 그러면 작업 폴더(cwd, --add-dir) 안에서만 저절로 허용되고 밖은 거절된다
+  const allowed = [...tools.filter((t) => !FILE_TOOLS.has(t)), ...(o.mcp ? [`mcp__${o.mcp.server}`] : [])];
   const args = [
     '-p',
     '--output-format', 'stream-json',
@@ -51,15 +62,17 @@ export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
     '--tools', tools.join(','), // "" 이면 내장 도구 전부 끔
     '--strict-mcp-config', // 사용자의 다른 MCP 서버는 불러오지 않는다
     ...(o.mcp ? ['--mcp-config', writeClaudeMcpConfig(o.mcp, o.cwd)] : []),
+    ...(o.readDirs ?? []).flatMap((d) => ['--add-dir', d]),
     ...(allowed.length ? ['--allowedTools', allowed.join(',')] : []),
     '--permission-mode', 'dontAsk', // 허용 목록에 없는 것은 묻지 않고 거절
     '--no-session-persistence',
     '--append-system-prompt', o.systemAppend,
     ...(o.model ? ['--model', o.model] : []),
+    ...(o.effort ? ['--effort', o.effort] : []),
   ];
   const child = spawn('claude', args, {
     cwd: o.cwd,
-    env: { ...process.env, MCP_TOOL_TIMEOUT: String(30 * 60_000) }, // ask_user 로 사람을 기다릴 수 있게
+    env: { ...process.env, ...o.env, MCP_TOOL_TIMEOUT: String(30 * 60_000) }, // ask_user 로 사람을 기다릴 수 있게
     stdio: ['pipe', 'pipe', 'pipe'],
     signal: o.signal,
   });

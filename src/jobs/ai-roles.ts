@@ -54,7 +54,9 @@ export async function tagRolesWithAi(
         systemAppend: system,
         tools: ['WebSearch', 'WebFetch'],
         model: modelFor(o.settings, o.settings.collect.ai_roles.model),
+        effort: o.settings.collect.ai_roles.effort || undefined,
         cwd: o.cwd,
+        onEvent: (ev) => ev.type === 'switch' && o.log?.(`  🔁 ${ev.from}: ${ev.reason} → 다음 AI 연결로 계속`),
       });
       cost += r.costUsd ?? 0;
       if (r.isError) throw new Error(r.text);

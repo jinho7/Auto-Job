@@ -46,14 +46,39 @@ export const DEFAULT_SECTION_MAP = {
   documents: '제출 자료 여부',
 };
 
+const LLM_TYPE = z.enum(['claude-cli', 'codex-cli', 'anthropic-api', 'openai-api']);
+/** 추론 성능 (생각을 얼마나 깊게). 비우면 연결의 기본 */
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const EFFORT = z.enum(['', ...EFFORTS]).default('');
+
 /** 지원 페이지로 인정하지 않는 사이트 기본 목록 (커뮤니티, 블로그, 검색 결과) */
 export const DEFAULT_REJECT_DOMAINS = ['cafe.naver.com', 'blog.naver.com', 'tistory.com', 'velog.io', 'brunch.co.kr', 'dcinside.com', 'instagram.com', 'facebook.com', 'youtube.com', 'google.com', 'namu.wiki'];
 
 export const settingsSchema = z.object({
   llm: z.object({
-    backend: z.enum(['claude-cli', 'codex-cli', 'anthropic-api', 'openai-api']),
+    /** 연결 목록이 비어 있을 때 쓰는 방식 (예전 설정 호환) */
+    backend: LLM_TYPE,
     /** 기본 모델. 비우면 방식별 기본 (Claude Code / Codex 는 각자 기본, API 는 llm/index.ts 의 기본값) */
     model: z.string().default(''),
+    /** 기본 추론 성능 */
+    effort: EFFORT,
+    /** AI 연결 목록. 위에서부터 쓰고, 한도나 로그인 문제가 생기면 다음 연결로 넘어간다 */
+    connections: z
+      .array(
+        z.object({
+          id: z.string().regex(/^[a-z0-9]+$/),
+          type: LLM_TYPE,
+          label: z.string().default(''),
+          model: z.string().default(''),
+          /** Claude Code / Codex 의 계정 폴더 (CLAUDE_CONFIG_DIR / CODEX_HOME). 비우면 이 컴퓨터의 기본 로그인 */
+          account_dir: z.string().default(''),
+          effort: EFFORT,
+          enabled: z.boolean().default(true),
+        }),
+      )
+      .default([]),
+    /** 한도에 걸린 연결을 다시 쓰기까지 기다릴 시간 (한도가 풀리는 시각을 모를 때) */
+    cooldown_minutes: z.number().int().min(5).max(1440).default(60),
   }),
   browser: z.object({
     /** handoff 는 예전 설정 호환용 (지원하지 않음 — 고르면 안내하고 멈춘다) */
@@ -108,6 +133,7 @@ export const settingsSchema = z.object({
       .object({
         enabled: z.boolean().default(true),
         model: z.string().default(''),
+        effort: EFFORT,
         /** 한 번 수집할 때 AI 로 찾을 최대 공고 수 (비용 제한) */
         max_per_run: z.number().int().min(0).max(200).default(20),
         /** AI 한 번에 맡길 공고 수 */
@@ -115,11 +141,11 @@ export const settingsSchema = z.object({
         /** 지원 페이지로 인정하지 않을 사이트 (카페, 블로그 …) */
         reject_domains: z.array(z.string()).default(DEFAULT_REJECT_DOMAINS),
       })
-      .default({ enabled: true, model: '', max_per_run: 20, batch_size: 5, reject_domains: DEFAULT_REJECT_DOMAINS }),
+      .default({ enabled: true, model: '', effort: '', max_per_run: 20, batch_size: 5, reject_domains: DEFAULT_REJECT_DOMAINS }),
     /** AI 직무 태그: off(규칙만) / fill_empty(규칙으로 못 단 공고만) / review(규칙 결과를 AI 가 다시 봄) */
     ai_roles: z
-      .object({ mode: z.enum(['off', 'fill_empty', 'review']).default('fill_empty'), model: z.string().default('') })
-      .default({ mode: 'fill_empty', model: '' }),
+      .object({ mode: z.enum(['off', 'fill_empty', 'review']).default('fill_empty'), model: z.string().default(''), effort: EFFORT })
+      .default({ mode: 'fill_empty', model: '', effort: '' }),
     /** 직무 태그를 하나도 달지 못한 공고는 등록하지 않는다 */
     require_role: z.boolean().default(false),
   }),
@@ -127,8 +153,11 @@ export const settingsSchema = z.object({
     .object({
       /** 인적사항 입력 AI 에게 줄 추가 규칙 (기본 규칙은 prompts/fill-basic-info.md) */
       extra_rules: z.array(z.string()).default([]),
-      /** 비우면 Claude Code 기본 모델 */
+      /** 비우면 AI 연결의 기본 모델 */
       model: z.string().default(''),
+      effort: EFFORT,
+      /** 설정 화면에서 지원서를 여러 개 맡길 때 동시에 진행할 개수 (나머지는 차례를 기다림) */
+      max_parallel: z.number().int().min(1).max(8).default(4),
       /** 다 쓰고 나서 누를 임시저장 버튼 문구 (앞에 있는 것부터 찾음) */
       save_buttons: z.array(z.string()).default(['임시저장', '임시 저장', '중간저장', '저장하기', '저장']),
       /** 다 쓰고 나서 임시저장을 누를지 */
@@ -136,15 +165,16 @@ export const settingsSchema = z.object({
       /** Notion 페이지 본문 정리와 제출 상태 변경을 할지 */
       update_notion: z.boolean().default(true),
     })
-    .default({ extra_rules: [], model: '', save_buttons: ['임시저장', '임시 저장', '중간저장', '저장하기', '저장'], save_draft: true, update_notion: true }),
+    .default({ extra_rules: [], model: '', effort: '', max_parallel: 4, save_buttons: ['임시저장', '임시 저장', '중간저장', '저장하기', '저장'], save_draft: true, update_notion: true }),
   essay: z.object({
     tone: z.string(),
     subtitle: z.boolean(),
     forbid_middle_dot: z.boolean(),
     blind: z.boolean(),
     banned_phrases: z.array(z.string()).default([]),
-    /** 자기소개서를 쓸 AI 모델. 비우면 Claude Code 기본 모델 */
+    /** 자기소개서를 쓸 AI 모델. 비우면 AI 연결의 기본 모델 */
     model: z.string().default(''),
+    effort: EFFORT,
     /** 검토 후 고쳐 쓰기 최대 횟수 */
     max_revisions: z.number().int().min(0).max(3).default(1),
   }),

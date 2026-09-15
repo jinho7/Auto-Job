@@ -14,6 +14,8 @@ const toml = (v: unknown): string =>
 export function codexArgs(o: AgentRun, lastFile: string): string[] {
   const args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '--cd', o.cwd, '--output-last-message', lastFile];
   if (o.model) args.push('--model', o.model);
+  // Codex 의 추론 단계는 minimal/low/medium/high 까지라 더 높은 단계는 high 로
+  if (o.effort) args.push('-c', `model_reasoning_effort=${toml(o.effort === 'xhigh' || o.effort === 'max' ? 'high' : o.effort)}`);
   if ((o.tools ?? []).some((t) => WEB.has(t))) args.push('-c', 'tools.web_search=true');
   if (o.mcp) {
     const k = `mcp_servers.${o.mcp.server}`;
@@ -29,7 +31,7 @@ export function codexPrompt(o: AgentRun): string {
 
 export async function runCodexAgent(o: AgentRun, bin = 'codex'): Promise<AgentResult> {
   const lastFile = path.join(o.cwd, `codex-last-${Date.now()}.txt`);
-  const child = spawn(bin, codexArgs(o, lastFile), { cwd: o.cwd, stdio: ['pipe', 'pipe', 'pipe'], signal: o.signal });
+  const child = spawn(bin, codexArgs(o, lastFile), { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ['pipe', 'pipe', 'pipe'], signal: o.signal });
   child.stdin.end(codexPrompt(o));
   let buf = '';
   let stderr = '';

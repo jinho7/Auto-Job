@@ -25,6 +25,7 @@ import { openUrl } from './open';
 import { startServer } from './server/server';
 import { paths, runDir } from './paths';
 import { checkProfile } from './profile/check';
+import { applyImport, importProfileText } from './profile/import';
 import { ProfileEditor } from './profile/editor';
 import { loadSchema } from './profile/schema';
 import { renderProfile, renderSchemaPaths } from './profile/show';
@@ -137,6 +138,50 @@ profile
   .description('대화형으로 내 정보를 입력하고 고친다')
   .argument('[section]', 'basic | education | career | extras | target | stories')
   .action(run((section?: string) => new ProfileEditor(profileStore(), inquirerPrompter).run(section)));
+
+profile
+  .command('import')
+  .description('글을 붙여넣어 내 정보 채우기: AI 가 항목별로 나누고, 미리보기를 확인한 뒤 적용한다')
+  .argument('[file]', '글 파일 (없으면 붙여넣은 뒤 Ctrl+D)')
+  .action(
+    run(async (file?: string) => {
+      let text: string;
+      if (file) text = readFileSync(file, 'utf8');
+      else {
+        if (process.stdin.isTTY) console.log('글을 붙여넣고, 다 됐으면 새 줄에서 Ctrl+D 를 누르세요.\n');
+        const chunks: Buffer[] = [];
+        for await (const c of process.stdin) chunks.push(c as Buffer);
+        text = Buffer.concat(chunks).toString('utf8');
+      }
+      const store = profileStore();
+      const settings = loadSettings();
+      console.log('\nAI 가 정리하는 중… (1~2분)');
+      const dir = runDir('profile-import');
+      mkdirSync(dir, { recursive: true });
+      const pv = await importProfileText(text, { settings, store, cwd: dir });
+      const mark = { new: '＋', changed: '↻', same: '=' } as const;
+      for (const [s, sec] of Object.entries(store.schema.sections)) {
+        const cs = pv.changes.filter((c) => c.section === s);
+        if (!cs.length) continue;
+        console.log(`\n■ ${sec.label}`);
+        for (const c of cs) console.log(`  ${mark[c.kind]} ${c.where.split(' > ').slice(1).join(' > ')}: ${c.after}${c.kind === 'changed' ? `   (지금: ${c.before})` : ''}${c.error ? `\n      ⚠️  ${c.error}` : ''}`);
+      }
+      if (pv.unknown.length) console.log(`\n항목에 없어 뺀 것: ${pv.unknown.join(', ')}`);
+      const sections = Object.keys(pv.data);
+      if (!sections.length && !pv.rules.length) return console.log('\n넣을 내용을 찾지 못했습니다.');
+      const chosen = sections.length
+        ? await inquirerPrompter.checkbox({ message: '적용할 섹션 (스페이스로 선택)', choices: sections.map((s) => ({ name: store.schema.sections[s].label, value: s, checked: true })) })
+        : [];
+      const rules = pv.rules.length
+        ? await inquirerPrompter.checkbox({ message: '지원서 입력 규칙에 추가할 것', choices: pv.rules.map((r) => ({ name: r, value: r, checked: true })) })
+        : [];
+      const r = applyImport(store, pv.data, chosen);
+      if (rules.length) settingsStore().addToList('apply.extra_rules', rules);
+      console.log(`\n✅ ${r.written}개 칸을 채웠습니다${rules.length ? `, 규칙 ${rules.length}개 추가` : ''}.`);
+      for (const x of r.skipped) console.log(`  ⚠️  넣지 않음: ${x}`);
+      console.log('확인: autojob profile show --filled');
+    }),
+  );
 
 profile
   .command('show')

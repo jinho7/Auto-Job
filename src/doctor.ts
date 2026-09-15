@@ -4,7 +4,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { COLLECTORS } from './collectors';
 import { loadSettings, type Settings } from './config';
-import { BACKEND_LABEL } from './llm';
+import { apiKeyFor } from './llm';
+import { connectionLabel, connectionsOf, KIND_LABEL, restingState } from './llm/pool';
 import { paths } from './paths';
 import { checkProfile } from './profile/check';
 import { loadSchema } from './profile/schema';
@@ -126,24 +127,36 @@ export async function runDoctor(d: DoctorDeps = {}): Promise<Check[]> {
     });
   }
 
-  // AI
-  const be = s.llm.backend;
-  if (be === 'claude-cli' || be === 'codex-cli') {
-    const bin = be === 'claude-cli' ? 'claude' : 'codex';
-    const v = await ver(bin);
-    add({
-      id: 'ai',
-      label: 'AI 연결',
-      status: v ? 'ok' : 'bad',
-      detail: v ? `${BACKEND_LABEL[be]} ${v} — 로그인은 "연결 확인"으로 확인` : `${bin} 명령을 찾지 못했습니다. ${be === 'claude-cli' ? 'Claude Code 를 설치하고 로그인하세요 (https://claude.com/claude-code)' : 'Codex CLI 를 설치하고 로그인하세요 (npm i -g @openai/codex, codex login)'}`,
-      page: ['settings', 'llm'],
-      cmd: 'autojob doctor --ai',
-    });
-  } else {
-    const key = be === 'anthropic-api' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
-    const set = !!getSecret(key);
-    add({ id: 'ai', label: 'AI 연결', status: set ? 'ok' : 'bad', detail: set ? `${BACKEND_LABEL[be]} (키 있음)` : `${key} 가 없습니다`, page: ['settings', 'llm'] });
+  // AI (연결 여러 개: 하나라도 쓸 수 있으면 됨)
+  const conns = connectionsOf(s).filter((c) => c.enabled);
+  const versions = new Map<string, string | null>();
+  const parts: string[] = [];
+  let aiUsable = 0;
+  for (const [i, c] of conns.entries()) {
+    let ok: boolean;
+    let note: string;
+    if (c.type === 'claude-cli' || c.type === 'codex-cli') {
+      const bin = c.type === 'claude-cli' ? 'claude' : 'codex';
+      if (!versions.has(bin)) versions.set(bin, await ver(bin));
+      ok = !!versions.get(bin);
+      note = ok ? (c.account_dir ? '따로 로그인한 계정' : '기본 로그인') : c.type === 'claude-cli' ? 'claude 명령 없음 — Claude Code 설치 필요' : 'codex 명령 없음 — npm i -g @openai/codex, codex login';
+    } else {
+      ok = !!apiKeyFor(c);
+      note = ok ? 'API 키 있음' : 'API 키 없음';
+    }
+    const rest = restingState(c.id);
+    if (ok && rest) note = `${KIND_LABEL[rest.kind]} — ${new Date(rest.until).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}까지 쉼`;
+    if (ok && !rest) aiUsable++;
+    parts.push(`${i + 1}. ${connectionLabel(c)} ${ok && !rest ? '✓' : '✗'} ${note}`);
   }
+  add({
+    id: 'ai',
+    label: 'AI 연결',
+    status: aiUsable ? 'ok' : 'bad',
+    detail: conns.length ? `${parts.join(' · ')}${versions.get('claude') ? ` (Claude Code ${versions.get('claude')!.split(' ')[0]})` : ''}` : '켜진 연결이 없습니다',
+    page: ['settings', 'llm'],
+    cmd: 'autojob doctor --ai',
+  });
   return checks;
 }
 

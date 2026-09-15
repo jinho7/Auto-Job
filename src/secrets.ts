@@ -8,7 +8,14 @@ export const SECRET_KEYS = {
   ANTHROPIC_API_KEY: 'Anthropic API 키',
   OPENAI_API_KEY: 'OpenAI API 키',
 } as const;
-export type SecretKey = keyof typeof SECRET_KEYS;
+/** 고정 이름 + AI 연결별 API 키 (LLM_KEY_<연결 id>) */
+export type SecretKey = keyof typeof SECRET_KEYS | `LLM_KEY_${string}`;
+
+export const connectionKeyName = (id: string): SecretKey => `LLM_KEY_${id.toUpperCase()}`;
+
+function checkName(key: string): void {
+  if (!(key in SECRET_KEYS) && !/^LLM_KEY_[A-Z0-9]+$/.test(key)) throw new Error(`알 수 없는 비밀값 이름: ${key}`);
+}
 
 function parseEnv(text: string): Map<string, string> {
   const m = new Map<string, string>();
@@ -29,6 +36,7 @@ export function getSecret(key: SecretKey, file = paths.env): string | undefined 
 
 /** 값을 저장한다. 빈 값이면 삭제. 다른 줄과 주석은 그대로 둔다. */
 export function setSecret(key: SecretKey, value: string, file = paths.env): void {
+  checkName(key);
   const v = value.trim();
   if (/[\r\n]/.test(v)) throw new Error('줄바꿈이 들어간 값은 저장할 수 없습니다');
   const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : ['# Auto-Job 비밀값 (git 에 올라가지 않음)'];
@@ -50,10 +58,10 @@ export function maskSecret(v: string | undefined): string {
   return v.length <= 10 ? '•'.repeat(v.length) : `${v.slice(0, 7)}…${v.slice(-4)}`;
 }
 
-export function secretStatus(file = paths.env): Record<SecretKey, { label: string; set: boolean; masked: string; fromEnv: boolean }> {
+export function secretStatus(file = paths.env): Record<keyof typeof SECRET_KEYS, { label: string; set: boolean; masked: string; fromEnv: boolean }> {
   const saved = readSecrets(file);
   return Object.fromEntries(
-    (Object.keys(SECRET_KEYS) as SecretKey[]).map((k) => {
+    (Object.keys(SECRET_KEYS) as (keyof typeof SECRET_KEYS)[]).map((k) => {
       const v = process.env[k] || saved.get(k);
       return [k, { label: SECRET_KEYS[k], set: !!v, masked: maskSecret(v), fromEnv: !!process.env[k] }];
     }),

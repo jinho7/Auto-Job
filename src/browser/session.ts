@@ -19,14 +19,14 @@ export class BrowserSession {
     private readonly tabGuard: Awaited<ReturnType<typeof installGuard>>,
   ) {}
 
-  static async open(settings: Settings): Promise<BrowserSession> {
+  static async open(settings: Settings, opts: { newWindow?: boolean; background?: boolean } = {}): Promise<BrowserSession> {
     const { driver, guard } = settings.browser;
     if (driver === 'handoff') throw new Error('handoff 드라이버는 브라우저를 직접 조종하지 않습니다');
     const browser = await connectCdp(settings.browser[driver]);
     const context = browser.contexts()[0] ?? (await browser.newContext());
 
     // 가드는 이 세션이 연 탭(과 그 팝업)에만 건다. 같은 브라우저의 다른 탭에는 영향이 없다.
-    const page = await context.newPage();
+    const page = opts.newWindow ? await openWindow(browser, context, !!opts.background) : await context.newPage();
     const tabGuard = await installGuard(page, guard);
     const session = new BrowserSession(browser, context, guard, page, tabGuard);
     // 컨텍스트에 리스너가 있으면 Playwright 가 다른 탭의 대화상자를 자동으로 닫지 않는다. 내 탭 것만 처리한다.
@@ -126,5 +126,30 @@ export class BrowserSession {
     }
     this.events.push(`대화상자 확인: ${msg}`);
     return d.type() === 'prompt' ? d.dismiss() : d.accept();
+  }
+}
+
+/** 새 창을 연다 (지원서를 여러 개 함께 진행할 때 창마다 따로). background 면 지금 창을 가리지 않게 뒤에 연다 */
+async function openWindow(browser: Browser, context: BrowserContext, background: boolean): Promise<Page> {
+  const cdp = await browser.newBrowserCDPSession();
+  try {
+    // 여러 지원서가 동시에 창을 열 수 있어서, "새 페이지가 생겼다"가 아니라 내가 만든 대상(targetId)의 페이지를 찾는다
+    const { targetId } = (await cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true, background })) as { targetId: string };
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      for (const p of context.pages()) {
+        const s = await context.newCDPSession(p).catch(() => null);
+        if (!s) continue;
+        const info = (await s.send('Target.getTargetInfo').catch(() => null)) as { targetInfo?: { targetId: string } } | null;
+        await s.detach().catch(() => {});
+        if (info?.targetInfo?.targetId === targetId) return p;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    throw new Error('새 창을 찾지 못했습니다');
+  } catch {
+    return context.newPage(); // 새 창을 지원하지 않으면 새 탭으로
+  } finally {
+    await cdp.detach().catch(() => {});
   }
 }

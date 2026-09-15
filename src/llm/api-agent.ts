@@ -1,6 +1,7 @@
 // API 키로 AI 를 쓸 때의 대화 반복: AI 가 도구를 부르면 우리가 실행해 결과를 돌려주고, 끝날 때까지 반복한다.
-//  - Anthropic Messages API: 웹 검색/가져오기는 서버 도구(web_search, web_fetch), 브라우저는 우리 MCP 도구
+//  - Anthropic: 공식 SDK(@anthropic-ai/sdk). 웹 검색/가져오기는 서버 도구(web_search, web_fetch), 브라우저는 우리 MCP 도구
 //  - OpenAI Responses API: 웹 검색은 web_search 도구, 브라우저는 function 도구
+import Anthropic from '@anthropic-ai/sdk';
 import type { AgentResult, AgentRun } from './claude-cli';
 import { connectMcp, type ToolHost } from './tool-host';
 
@@ -31,18 +32,34 @@ async function post(f: typeof fetch, url: string, headers: Record<string, string
 
 const toolText = (out: { text: string; isError: boolean }) => (out.isError ? `실패: ${out.text}` : out.text || '(결과 없음)');
 
+/** Opus 5 / Sonnet 5 / Fable 등 최신 모델: 새 웹 도구(동적 필터링)와 서버 쪽 거절 대체(fallbacks)를 쓴다 */
+const MODERN = /^claude-(opus-5|sonnet-5|fable|mythos|opus-4-[678]|sonnet-4-6)/;
+const FALLBACK = /^claude-(opus-5|fable-5-1)/;
+
 async function runAnthropic(o: AgentRun, d: ApiDeps, host: ToolHost | null, f: typeof fetch): Promise<AgentResult> {
+  const client = new Anthropic({ apiKey: d.apiKey, fetch: f, maxRetries: 3 });
   const web = (o.tools ?? []).some((t) => WEB.has(t));
+  const modern = MODERN.test(d.model);
   const tools: unknown[] = [
-    ...(web ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 20 }, { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 20 }] : []),
+    ...(web
+      ? modern
+        ? [{ type: 'web_search_20260209', name: 'web_search', max_uses: 20 }, { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 20 }]
+        : [{ type: 'web_search_20250305', name: 'web_search', max_uses: 20 }, { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 20 }]
+      : []),
     ...(host?.tools ?? []).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })),
   ];
-  const headers = { 'x-api-key': d.apiKey, 'anthropic-version': '2023-06-01', ...(web ? { 'anthropic-beta': 'web-fetch-2025-09-10' } : {}) };
+  const betas = [...(FALLBACK.test(d.model) ? ['server-side-fallback-2026-07-01'] : []), ...(web && !modern ? ['web-fetch-2025-09-10'] : [])];
+  // Haiku 는 추론 성능(effort)을 받지 않는다
+  const effort = o.effort && !/haiku/.test(d.model) ? { output_config: { effort: o.effort } } : {};
   const messages: { role: 'user' | 'assistant'; content: unknown }[] = [{ role: 'user', content: o.prompt }];
   let last = '';
   for (let turn = 0; turn < (d.maxTurns ?? 150); turn++) {
-    const r = await post(f, 'https://api.anthropic.com/v1/messages', headers, { model: d.model, max_tokens: 16000, system: o.systemAppend, messages, ...(tools.length ? { tools } : {}) }, o.signal);
-    const content = (r.content ?? []) as { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[];
+    const params = { model: d.model, max_tokens: 16000, system: o.systemAppend, messages, ...(tools.length ? { tools } : {}), ...effort };
+    // 거절(refusal)되면 서버가 알아서 다른 모델로 이어서 답하게 한다 (Opus 5 / Fable 5.1)
+    const r = (betas.length
+      ? await client.beta.messages.create({ ...params, betas, ...(FALLBACK.test(d.model) ? { fallbacks: 'default' } : {}) } as never, { signal: o.signal })
+      : await client.messages.create(params as never, { signal: o.signal })) as unknown as { content: { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[]; stop_reason: string };
+    const content = r.content ?? [];
     messages.push({ role: 'assistant', content });
     const texts = content.filter((c) => c.type === 'text' && c.text?.trim()).map((c) => c.text!);
     for (const t of texts) o.onEvent?.({ type: 'text', text: t });
@@ -77,7 +94,8 @@ async function runOpenAi(o: AgentRun, d: ApiDeps, host: ToolHost | null, f: type
   let previous: string | undefined;
   let last = '';
   for (let turn = 0; turn < (d.maxTurns ?? 150); turn++) {
-    const r = await post(f, 'https://api.openai.com/v1/responses', headers, { model: d.model, instructions: o.systemAppend, input, ...(previous ? { previous_response_id: previous } : {}), ...(tools.length ? { tools } : {}) }, o.signal);
+    const reasoning = o.effort ? { reasoning: { effort: o.effort === 'xhigh' || o.effort === 'max' ? 'high' : o.effort } } : {};
+    const r = await post(f, 'https://api.openai.com/v1/responses', headers, { model: d.model, instructions: o.systemAppend, input, ...(previous ? { previous_response_id: previous } : {}), ...(tools.length ? { tools } : {}), ...reasoning }, o.signal);
     previous = r.id;
     const output = (r.output ?? []) as { type: string; name?: string; arguments?: string; call_id?: string; content?: { type: string; text?: string }[]; action?: { query?: string } }[];
     const texts = output.filter((x) => x.type === 'message').flatMap((m) => (m.content ?? []).filter((c) => c.type === 'output_text').map((c) => c.text ?? ''));

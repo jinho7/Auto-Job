@@ -14,7 +14,7 @@ import { propText } from '../notion/client';
 import { fillPageSections, setSubmitStatus, type PageContent, type SectionResult } from '../notion/page-fill';
 import { notionClient } from '../notion/setup';
 import { getSecret } from '../secrets';
-import { notify } from '../notify';
+import { notify as notifyMac } from '../notify';
 import { DATA_HOME, paths, ROOT, runDir } from '../paths';
 import { checkProfile } from '../profile/check';
 import { loadSchema } from '../profile/schema';
@@ -85,6 +85,14 @@ export type ApplyOptions = {
   steps?: ApplyStep[];
   ask: (question: string) => Promise<string>;
   log?: (m: string) => void;
+  /** 알림 (기본: macOS 알림). 설정 화면에서는 대화방 빨간 점과 창 띄우기까지 */
+  notify?: (title: string, message: string) => void;
+  /** 지원서마다 새 창으로 연다 (여러 개를 함께 진행할 때). background 면 뒤에 연다 */
+  window?: { newWindow: boolean; background?: boolean };
+  /** 브라우저 세션이 열리면 (창 앞으로 가져오기용) */
+  onSession?: (s: BrowserSession) => void;
+  /** 중지 */
+  signal?: AbortSignal;
 };
 
 const TOOL_ICON: Record<string, string> = { fill: '✏️ ', select: '🔽', check: '☑️ ', click: '👆', press: '⌨️ ', upload: '📎', dialog: '💬' };
@@ -163,9 +171,9 @@ export function buildPageContent(x: {
 
 export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const log = o.log ?? console.log;
+  const notify = o.notify ?? notifyMac;
   const steps: ApplyStep[] = o.steps?.length ? o.steps : ['basic', 'essay'];
   const settings = loadSettings();
-  if (settings.llm.backend !== 'claude-cli') throw new Error(`지원서 입력은 지금 claude-cli 연결만 지원합니다 (현재: ${settings.llm.backend}). 설정 → AI 연결에서 바꿔 주세요.`);
   if (settings.browser.driver === 'handoff') throw new Error('handoff 브라우저 설정에서는 자동 입력을 할 수 없습니다. 설정 → 브라우저에서 Aside 나 Chrome 을 골라 주세요.');
   const driver = settings.browser.driver;
 
@@ -174,12 +182,13 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const check = checkProfile(store.toJSON(), store.schema, store.filesDir);
   if (check.missing.length) log(`⚠️  내 정보에 비어 있는 필수 항목 ${check.missing.length}개 — 해당 칸은 비워 둡니다: ${check.missing.map((m) => m.where).join(', ')}`);
   const files = existsSync(store.filesDir) ? readdirSync(store.filesDir).filter((f) => !f.startsWith('.')) : [];
-  const profileDoc = renderProfileForAgent(store.toJSON(), store.schema, { sections: ['basic', 'education', 'career', 'extras', 'target'] });
+  const profileDoc = renderProfileForAgent(store.toJSON(), store.schema, { sections: ['basic', 'education', 'career', 'extras', 'target', 'notes'] });
 
   // ① 준비
   const target = await resolveTarget(o.target, settings);
   log(`① ${target.company || '지원 페이지'} — ${target.link}`);
-  const session = await BrowserSession.open(settings);
+  const session = await BrowserSession.open(settings, o.window);
+  o.onSession?.(session);
   const startedAt = new Date().toISOString();
   const dir = runDir(`apply-${(target.company || 'site').replace(/[^0-9A-Za-z가-힣]+/g, '_').slice(0, 30)}`);
   mkdirSync(dir, { recursive: true });
@@ -200,13 +209,13 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
     // ② 로그인 대기 — 사람만 하는 일
     if (!o.skipLoginWait) {
       notify('Auto-Job 지원서', '브라우저에서 로그인/본인인증을 마치고 지원서 입력 화면으로 이동해 주세요');
-      const a = await o.ask('② 브라우저에서 직접 해 주세요: 회원가입·로그인·본인인증·약관 동의 → 지원서의 인적사항 입력 화면까지 이동.\n   다 되면 Enter (그만두려면 q)');
-      if (a.trim().toLowerCase() === 'q') throw new Error('사용자가 중단했습니다');
+      const a = await o.ask('② 브라우저 창에서 직접 해 주세요: 회원가입·로그인·본인인증·약관 동의 → 지원서의 인적사항 입력 화면까지 이동.\n   다 되면 알려 주세요 (터미널은 Enter, 대화창은 아무 말이나 / 그만두려면 q 또는 "중지")');
+      if (/^(q|중지|그만|취소)$/i.test(a.trim())) throw new Error('사용자가 중단했습니다');
     }
 
     bridge = await startBridge({
       ask: async (q) => {
-        notify('Auto-Job 지원서', '확인이 필요합니다 — 터미널을 봐 주세요');
+        notify('Auto-Job 지원서', `확인이 필요합니다 — ${q.slice(0, 60)}`);
         return o.ask(`❓ ${q}`);
       },
       event: (e) => {
@@ -241,9 +250,12 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
           env: { AUTOJOB_HOME: DATA_HOME, AUTOJOB_TARGET_ID: targetId, ...bridgeEnv },
         },
         model: modelFor(settings, settings.apply.model),
+        effort: settings.apply.effort || undefined,
         cwd: dir,
+        signal: o.signal,
         onEvent: (e) => {
           if (e.type === 'text') log(`   💭 ${e.text.replace(/\s+/g, ' ').slice(0, 200)}`);
+          if (e.type === 'switch') log(`   🔁 ${e.from}: ${e.reason} → 다음 AI 연결로 이어서 합니다 (이미 넣은 칸은 그대로 둡니다)`);
         },
       });
 
@@ -270,7 +282,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
 
         essay.result = await writeEssays(
           { company: target.company, role: got?.role || target.role || '', postingUrl: target.link, questions: essay.questions },
-          { settings, profile: store.toJSON(), schema: store.schema, cwd: dir, log },
+          { settings, profile: store.toJSON(), schema: store.schema, cwd: dir, log, signal: o.signal },
         );
         essay.file = path.join(dir, 'essays.md');
         writeFileSync(essay.file, formatEssays(essay.result));

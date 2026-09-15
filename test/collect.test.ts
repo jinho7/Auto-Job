@@ -298,7 +298,7 @@ test('파이프라인: AI 직무 태그 (규칙으로 못 단 공고만 / 다시
   };
   const answers = { 'fake:규칙사': ['백엔드 (서버)', 'AI'], 'fake:애매사': ['데이터', '없는 태그'], 'fake:모름사': [] };
   const go = async (mode: 'off' | 'fill_empty' | 'review', requireRole = false) => {
-    const s: Settings = { ...base, collect: { ...base.collect, sources: { fake: true }, ai_roles: { mode, model: '' }, require_role: requireRole } };
+    const s: Settings = { ...base, collect: { ...base.collect, sources: { fake: true }, ai_roles: { mode, model: '', effort: '' }, require_role: requireRole } };
     const ai = fakeAgent({}, answers);
     const n = notion();
     const r = await runCollect({ settings: s, http: okHttp, browserPage: async () => { throw new Error('x'); }, seen: new SeenStore(path.join(tempDir(), 's.json')), notion: n, dryRun: false, now: NOW, collectors: [fakeCollector(items)], runAgent: ai.run });

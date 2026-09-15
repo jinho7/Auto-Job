@@ -1,5 +1,7 @@
 // 웹 UI 가 부르는 API. 저장소 로직은 CLI 와 같은 ProfileStore / SettingsStore 를 쓴다.
-import { existsSync, readdirSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { BrowserSession } from '../browser/session';
 import { browserSelfTest } from '../browser/selftest';
@@ -10,6 +12,34 @@ import { loadDutyGroups } from '../collectors/jasoseol';
 import { loadDutyCategories } from '../collectors/jobkorea';
 import { PoliteHttp } from '../http';
 import { runDoctor } from '../doctor';
+import { ApplyJobManager } from '../apply/jobs';
+import type { ApplyStep } from '../apply/run';
+import { bringSessionToFront } from '../browser/activate';
+import { listPostings } from '../notion/postings';
+import { notify as notifyMac } from '../notify';
+
+let jobManager: ApplyJobManager | null = null;
+/** 설정 화면 서버 하나에 하나: 지원서 대화방들 */
+export function applyJobs(): ApplyJobManager {
+  jobManager ??= new ApplyJobManager({
+    maxParallel: () => loadSettings().apply.max_parallel,
+    notify: notifyMac,
+    bringToFront: (s) => bringSessionToFront(loadSettings(), s),
+  });
+  return jobManager;
+}
+import { closeAutomationBrowser, defaultDataDir, detectDefaultBrowser, importPasswords, listProfiles } from '../browser/default-profile';
+import { addConnection, describeConnections, moveConnection, openLoginTerminal, removeConnection, updateConnection } from '../llm/connections';
+import { clearConnection, connectionsOf, type Connection } from '../llm/pool';
+import { applyImport, importProfileText } from '../profile/import';
+import { scanFolder, scanFolders, type SourceFolder } from '../essay/sources';
+
+/** 설정 화면용 폴더 요약 (파일 종류별 개수와 앞의 몇 개) */
+function summarizeFolder(f: SourceFolder) {
+  const counts: Record<string, number> = {};
+  for (const x of f.files) counts[x.ext] = (counts[x.ext] ?? 0) + 1;
+  return { path: f.path, ok: f.ok, error: f.error, total: f.files.length, counts, sample: f.files.slice(0, 30).map((x) => x.rel), truncated: !!f.truncated };
+}
 import { testAi } from '../llm';
 import { parseDeadline, type JobPosting } from '../jobs/model';
 import { OUTCOME_LABEL } from '../pipeline/collect';
@@ -21,7 +51,7 @@ import { paths } from '../paths';
 import { checkProfile } from '../profile/check';
 import { loadSchema } from '../profile/schema';
 import { ProfileStore } from '../profile/store';
-import { SECRET_KEYS, secretStatus, setSecret, type SecretKey } from '../secrets';
+import { connectionKeyName, SECRET_KEYS, secretStatus, setSecret, type SecretKey } from '../secrets';
 import { SOURCE_LABELS, STANDARD_EMPLOYMENT } from '../settings/editor';
 import { parseNotionId, SettingsStore } from '../settings/store';
 
@@ -70,11 +100,128 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
   'GET /api/doctor': async () => ({ checks: await runDoctor() }),
   'POST /api/llm/test': async () => testAi(loadSettings()),
 
+  // ── AI 연결 여러 개 ──
+  'GET /api/llm/connections': () => ({ connections: describeConnections(loadSettings()) }),
+  'POST /api/llm/connections/add': (b) => {
+    const type = str(b, 'type');
+    if (!['claude-cli', 'codex-cli', 'anthropic-api', 'openai-api'].includes(type)) throw new Error('알 수 없는 연결 종류');
+    const c = addConnection(settingsStore(), type as Connection['type']);
+    return { id: c.id, connections: describeConnections(loadSettings()), ...state() };
+  },
+  'POST /api/llm/connections/update': (b) => {
+    const patch = (b.patch ?? {}) as Record<string, unknown>;
+    const allowed = Object.fromEntries(Object.entries(patch).filter(([k]) => ['label', 'model', 'account_dir', 'enabled', 'effort'].includes(k)));
+    updateConnection(settingsStore(), str(b, 'id'), allowed);
+    return { connections: describeConnections(loadSettings()), ...state() };
+  },
+  'POST /api/llm/connections/move': (b) => (moveConnection(settingsStore(), str(b, 'id'), b.dir === -1 ? -1 : 1), { connections: describeConnections(loadSettings()), ...state() }),
+  'POST /api/llm/connections/remove': (b) => (removeConnection(settingsStore(), str(b, 'id')), { connections: describeConnections(loadSettings()), ...state() }),
+  'POST /api/llm/connections/key': (b) => (setSecret(connectionKeyName(str(b, 'id')), String(b.value ?? '')), { connections: describeConnections(loadSettings()) }),
+  'POST /api/llm/connections/reset': (b) => (clearConnection(str(b, 'id')), { connections: describeConnections(loadSettings()) }),
+  'POST /api/llm/connections/login': async (b) => {
+    const c = connectionsOf(loadSettings()).find((x) => x.id === str(b, 'id'));
+    if (!c) throw new Error('없는 연결입니다');
+    const cmd = await openLoginTerminal(c);
+    return { command: cmd, opened: process.platform === 'darwin' };
+  },
+  'POST /api/llm/connections/test': async (b) => {
+    const settings = loadSettings();
+    const c = connectionsOf(settings).find((x) => x.id === str(b, 'id'));
+    if (!c) throw new Error('없는 연결입니다');
+    const r = await testAi(settings, undefined, c);
+    if (r.ok) clearConnection(c.id);
+    return { ...r, connections: describeConnections(loadSettings()) };
+  },
+
+  // ── 지원서 여러 개 함께 (대화방) ──
+  'POST /api/apply/postings': async () => {
+    const settings = loadSettings();
+    const id = settings.notion.data_source_id || settings.notion.database_id;
+    if (!id) throw new Error('Notion DB 를 아직 고르지 않았습니다. 설정 → Notion 에서 골라 주세요.');
+    const client = notionClient();
+    const ds = await client.resolveDataSource(id);
+    return { postings: await listPostings(client, settings, ds.id), statusOptions: settings.notion.status_options };
+  },
+  'POST /api/apply/start': (b) => {
+    const targets = Array.isArray(b.targets) ? (b.targets as { target?: unknown; title?: unknown }[]).map((t) => ({ target: String(t.target ?? ''), title: t.title ? String(t.title) : undefined })).filter((t) => t.target) : [];
+    const steps = (Array.isArray(b.steps) ? b.steps.map(String) : ['basic', 'essay']).filter((x) => x === 'basic' || x === 'essay') as ApplyStep[];
+    const jobs = applyJobs().start(targets, steps.length ? steps : ['basic', 'essay']);
+    return { started: jobs.map((j) => j.id), ...applyJobs().snapshot(0) };
+  },
+  'POST /api/apply/jobs': (b) => applyJobs().snapshot(Number(b.since) || 0),
+  'POST /api/apply/answer': (b) => applyJobs().answer(str(b, 'id'), str(b, 'text')),
+  'POST /api/apply/stop': (b) => (applyJobs().stop(str(b, 'id')), {}),
+  'POST /api/apply/focus': async (b) => ({ focused: await applyJobs().focus(str(b, 'id')) }),
+  'POST /api/apply/remove': (b) => (applyJobs().remove(str(b, 'id')), {}),
+
+  // ── 브라우저 기본 프로필 ──
+  'GET /api/browser/default': async () => {
+    const def = await detectDefaultBrowser();
+    const s = loadSettings();
+    const driver = (s.browser.driver === 'chrome' ? 'chrome' : 'aside') as 'aside' | 'chrome';
+    const dir = defaultDataDir(driver);
+    return { ...def, current: driver, profiles: dir ? listProfiles(dir) : [], dataDir: dir };
+  },
+  'POST /api/browser/import-passwords': async (b) => {
+    const settings = loadSettings();
+    const driver = (settings.browser.driver === 'chrome' ? 'chrome' : 'aside') as 'aside' | 'chrome';
+    const closed = await closeAutomationBrowser(settings.browser[driver].cdp_port);
+    const r = await importPasswords({ settings, driver, profile: str(b, 'profile') });
+    return { ...r, closedAutomation: closed };
+  },
+
   // ── 내 정보 ──
   'POST /api/profile/set': (b) => {
     const v = b.value;
     profileStore().set(str(b, 'path'), Array.isArray(v) ? v.map(String) : String(v ?? ''));
     return state();
+  },
+  'POST /api/profile/import/preview': async (b) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'autojob-import-'));
+    try {
+      return await importProfileText(str(b, 'text'), { settings: loadSettings(), store: profileStore(), cwd: dir });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  'POST /api/profile/import/apply': (b) => {
+    if (!b.data || typeof b.data !== 'object') throw new Error('적용할 내용이 없습니다');
+    const sections = Array.isArray(b.sections) ? b.sections.map(String) : [];
+    const result = applyImport(profileStore(), b.data as Record<string, unknown>, sections);
+    const rules = Array.isArray(b.rules) ? b.rules.map(String).filter((x) => x.trim()) : [];
+    if (rules.length) settingsStore().addToList('apply.extra_rules', rules);
+    return { result: { ...result, rules: rules.length }, ...state() };
+  },
+  'POST /api/profile/file': (b) => {
+    const store = profileStore();
+    const name = safeFileName(str(b, 'name'));
+    const file = path.join(store.filesDir, name);
+    if (!existsSync(file)) throw new Error('파일이 없습니다');
+    const ext = path.extname(name).slice(1).toLowerCase();
+    const mime = ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' } as Record<string, string>)[ext];
+    if (!mime) return { name, mime: null };
+    return { name, mime, base64: readFileSync(file).toString('base64') };
+  },
+
+  // ── 자기소개서 소재 폴더 ──
+  'GET /api/stories/folders': () => ({ folders: scanFolders((profileStore().get('stories.folders') as { path?: string; note?: string }[]) ?? []).map(summarizeFolder) }),
+  'POST /api/stories/folders/add': (b) => {
+    const f = scanFolder(str(b, 'path'));
+    if (!f.ok) throw new Error(`${f.path}: ${f.error}`);
+    const store = profileStore();
+    const cur = (store.get('stories.folders') as { path?: string }[]) ?? [];
+    if (cur.some((x) => x.path === f.path)) throw new Error('이미 연결한 폴더입니다');
+    store.addItem('stories.folders', { path: f.path });
+    return { folder: summarizeFolder(f), ...state() };
+  },
+  'POST /api/fs/pick-folder': async () => {
+    if (process.platform !== 'darwin') throw new Error('이 운영체제에서는 폴더 위치를 직접 적어 주세요');
+    return new Promise((resolve, reject) => {
+      execFile('osascript', ['-e', 'tell current application', '-e', 'activate', '-e', 'POSIX path of (choose folder with prompt "자기소개서 소재 폴더를 고르세요")', '-e', 'end tell'], { timeout: 5 * 60_000 }, (err, stdout, stderr) => {
+        if (err) return /-128|User canceled|취소/.test(`${stderr}${err.message}`) ? resolve({ cancelled: true }) : reject(new Error(`폴더 고르기 창을 열지 못했습니다: ${stderr || err.message}`));
+        resolve({ path: stdout.trim().replace(/\/$/, '') });
+      });
+    });
   },
   'POST /api/profile/add': (b) => ({ index: profileStore().addItem(str(b, 'path')), ...state() }),
   'POST /api/profile/remove': (b) => (profileStore().removeItem(str(b, 'path')), state()),

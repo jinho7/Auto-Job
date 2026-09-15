@@ -7,7 +7,7 @@
 #   longtext  여러 줄 글
 #   number    숫자 (3.85)
 #   date      날짜 YYYY.MM.DD
-#   month     연월 YYYY.MM
+#   month     연월 YYYY.MM (일까지 YYYY.MM.DD 로 적어도 된다. 사이트가 월까지만 받으면 잘라서 넣는다)
 #   select    options 중 하나 (allow_other: true면 직접 입력 허용)
 #   tags      여러 값 목록
 #   file      profile/me/files/ 안의 파일 이름
@@ -30,6 +30,8 @@ sections:
       gender: { label: 성별, type: select, options: [남, 여] }
       phone: { label: 휴대폰, required: true, pattern: '^0\d{1,2}-\d{3,4}-\d{4}$', example: 010-1234-5678 }
       emergency_phone: { label: 비상연락처, pattern: '^0\d{1,2}-\d{3,4}-\d{4}$' }
+      emergency_relation: { label: 비상연락처 관계, example: 모 }
+      nationality: { label: 국적, example: 대한민국 }
       email: { label: 이메일, required: true, pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$' }
       address:
         label: 주소
@@ -38,6 +40,7 @@ sections:
           zipcode: { label: 우편번호, pattern: '^\d{5}$' }
           road: { label: 도로명 주소, required: true }
           detail: { label: 상세 주소, hint: 동/호수 }
+          registered: { label: 주민등록지, hint: 현주소와 다를 때만 }
       military:
         label: 병역
         type: group
@@ -45,8 +48,12 @@ sections:
           status: { label: 병역 구분, type: select, options: [군필, 미필, 면제, 복무중, 해당없음] }
           branch: { label: 군별, type: select, allow_other: true, options: [육군, 해군, 공군, 해병대, 의무경찰, 사회복무요원, 산업기능요원, 전문연구요원] }
           rank: { label: 계급, example: 병장 }
+          specialty: { label: 병과(특기), example: 111101 (보병) }
+          service_number: { label: 군번 }
+          service_type: { label: 역종, type: select, allow_other: true, options: [현역, 보충역, 전시근로역, 대체역] }
           start: { label: 입대일, type: date }
           end: { label: 전역일, type: date }
+          discharge: { label: 전역(소집해제) 구분, example: 만기전역 }
           exemption_reason: { label: 면제 사유 }
       veteran: { label: 보훈 대상, type: select, options: [비대상, 대상] }
       disability: { label: 장애 여부, type: select, options: [비대상, 대상] }
@@ -56,8 +63,17 @@ sections:
         type: group
         fields:
           github: { label: GitHub }
+          linkedin: { label: LinkedIn }
           blog: { label: 블로그 }
           portfolio: { label: 포트폴리오 }
+          more:
+            label: 그 밖의 링크
+            type: list
+            hint: 직무에 따라 다른 포트폴리오 등. "언제 쓰나"에 조건을 적으면 AI 가 지원 직무에 맞춰 고른다
+            item:
+              label: { label: 이름, required: true, example: 포트폴리오 (클라우드) }
+              url: { label: 주소, required: true }
+              when: { label: 언제 쓰나, example: 클라우드/인프라 직무 }
 
   education:
     label: 학력 / 연구
@@ -69,6 +85,8 @@ sections:
           name: { label: 학교명 }
           type: { label: 계열, type: select, allow_other: true, options: [일반고, 특목고, 자율고, 특성화고, 검정고시] }
           region: { label: 소재지 }
+          day_night: { label: 주간/야간, type: select, options: [주간, 야간] }
+          admitted: { label: 입학 연월, type: month }
           graduated: { label: 졸업 연월, type: month }
           status: { label: 졸업 구분, type: select, options: [졸업, 졸업예정] }
       universities:
@@ -80,7 +98,12 @@ sections:
           name: { label: 학교명, required: true }
           campus: { label: 본교/분교, type: select, options: [본교, 분교] }
           degree: { label: 학위, type: select, required: true, options: [전문학사, 학사, 석사, 박사] }
+          college: { label: 단과대학 }
+          field: { label: 학과 계열, example: 공학 }
           major: { label: 전공, required: true }
+          major_field: { label: 전공 계열, example: 공학계열(컴퓨터·통신) }
+          major_type: { label: 전공 유형, type: select, allow_other: true, options: [주전공, 복수전공, 부전공, 연계전공] }
+          day_night: { label: 주간/야간, type: select, options: [주간, 야간] }
           double_major: { label: 복수전공 }
           minor: { label: 부전공 }
           admitted: { label: 입학 연월, type: month, required: true }
@@ -90,6 +113,10 @@ sections:
           gpa: { label: 학점, type: number }
           gpa_max: { label: 학점 만점, type: select, options: ['4.5', '4.3', '4.0', '100'] }
           major_gpa: { label: 전공 학점, type: number }
+          major_gpa_max: { label: 전공 학점 만점, type: select, options: ['4.5', '4.3', '4.0', '100'] }
+          credits: { label: 총 이수 학점, type: number }
+          major_credits: { label: 전공 이수 학점, type: number }
+          rank: { label: 석차, example: 26/102 }
           location: { label: 소재지 }
           thesis: { label: 졸업 논문/작품 }
       research:
@@ -112,10 +139,14 @@ sections:
         item:
           type: { label: 구분, type: select, allow_other: true, options: [정규직, 계약직, 인턴, 아르바이트, 프리랜서] }
           company: { label: 회사명, required: true }
+          employees: { label: 직원 수, example: 1024명 }
+          revenue: { label: 매출액, example: 3656억 원 }
+          status: { label: 재직 상태, type: select, options: [재직, 퇴사] }
           department: { label: 부서 }
           position: { label: 직급/직책 }
           start: { label: 시작 연월, type: month, required: true }
           end: { label: 종료 연월, type: month, hint: 재직중이면 비움 }
+          salary: { label: 연봉, example: 4200만원 }
           duties: { label: 담당 업무, type: longtext }
           reason_for_leaving: { label: 퇴사 사유 }
       trainings:
@@ -154,6 +185,15 @@ sections:
           date: { label: 취득일, type: date }
           expires: { label: 만료일, type: date }
           reg_no: { label: 수험번호/등록번호 }
+          issuer: { label: 주최/발급 기관 }
+      language_skills:
+        label: 외국어 활용 능력
+        type: list
+        item:
+          language: { label: 언어, required: true, example: 영어 }
+          speaking: { label: 회화 수준 }
+          writing: { label: 작문 수준 }
+          reading: { label: 독해 수준 }
       certificates:
         label: 자격증
         type: list
@@ -161,6 +201,7 @@ sections:
           name: { label: 자격증명, required: true, example: 정보처리기사 }
           issuer: { label: 발급기관 }
           date: { label: 취득일, type: date }
+          expires: { label: 만료일, type: date }
           number: { label: 자격번호 }
       awards:
         label: 수상
@@ -186,7 +227,9 @@ sections:
         type: list
         item:
           name: { label: 기술명, required: true }
-          level: { label: 수준, type: select, options: [상, 중, 하] }
+          category: { label: 구분, type: select, allow_other: true, options: [언어, OA, 기타] }
+          level: { label: 수준, type: select, allow_other: true, options: [고급, 중급, 초급] }
+          years: { label: 사용 기간, example: 3년 }
 
   target:
     label: 희망 조건
@@ -195,13 +238,21 @@ sections:
       employment_types: { label: 희망 고용형태, type: tags }
       regions: { label: 희망 근무지, type: tags }
       salary: { label: 희망 연봉, hint: 비우면 "회사 내규에 따름"을 고른다 }
+      previous_salary: { label: 직전 연봉 }
       available_from: { label: 입사 가능일, type: date }
 
   stories:
     label: 자기소개서 소재
     fields:
+      folders:
+        label: 소재 폴더
+        type: list
+        hint: 경험을 정리해 둔 내 컴퓨터의 폴더 (md, txt, pdf …). 자소서를 쓸 때 AI 가 이 폴더의 파일만 읽고 문항에 맞는 소재를 찾는다
+        item:
+          path: { label: 폴더 위치, required: true, example: /Users/me/Documents/취업/경험정리 }
+          note: { label: 설명, example: 프로젝트 회고, 동아리 활동 정리 }
       items:
-        label: 소재
+        label: 직접 적은 소재
         type: list
         hint: 자소서를 쓸 때 AI가 문항마다 1~2개씩 골라 쓰는 경험. 수치와 과정이 구체적일수록 좋다
         item:
@@ -215,3 +266,14 @@ sections:
           learned: { label: 배운 점, type: longtext }
           fits: { label: 어울리는 문항 유형, type: tags, example: '직무 역량, 문제 해결, 협업' }
           keywords: { label: 키워드, type: tags }
+
+  notes:
+    label: 지원서 입력 메모
+    fields:
+      items:
+        label: 메모
+        type: list
+        hint: '항목에 맞지 않는 정보나 지원서를 쓸 때의 지시. 예: "비워 둘 칸: 추천인, 지원경로", "컴퓨터활용능력은 직무에 맞는 8~10개만"'
+        item:
+          subject: { label: 적용할 곳, example: 컴퓨터활용능력 }
+          text: { label: 내용, type: longtext, required: true }

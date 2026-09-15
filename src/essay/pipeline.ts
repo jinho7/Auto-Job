@@ -8,14 +8,19 @@ import { paths } from '../paths';
 import { renderProfileForAgent } from '../apply/profile-doc';
 import type { ProfileSchema } from '../profile/schema';
 import { blindTermsFromProfile, checkEssay, targetRange, UNIT_LABEL, type EssayCheck } from './checks';
+import { inlineSources, scanFolders, sourceIndex } from './sources';
 import type { EssayAnswer, EssayQuestion, Research, Strategy } from './types';
 
 export type Review = { id: number; verdict: 'ok' | 'revise'; unsupported_claims?: string[]; problems?: string[]; suggestions?: string[] };
 
 export type EssayInput = { company: string; role: string; postingUrl?: string; questions: EssayQuestion[] };
 
+export type Material = { title: string; source?: string; period?: string; role?: string; facts: string; fits?: number[] };
+
 export type EssayResult = {
   input: EssayInput;
+  /** 소재 폴더에서 찾은 소재 */
+  materials?: { items: Material[]; read: string[]; skipped: string[]; folders: string[] };
   research?: Research;
   strategy: Strategy[];
   answers: EssayAnswer[];
@@ -34,6 +39,7 @@ export type EssayDeps = {
   schema: ProfileSchema;
   cwd: string;
   log?: (m: string) => void;
+  signal?: AbortSignal;
   /** 테스트에서 가짜 AI 로 바꿀 수 있게 */
   runAgent?: (o: AgentRun) => Promise<{ text: string; isError: boolean; costUsd?: number }>;
 };
@@ -70,11 +76,14 @@ export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<Essa
   const e = d.settings.essay;
   const blind = e.blind ? blindTermsFromProfile(d.profile as Record<string, any>) : [];
   const style = styleRules(e, blind);
-  const profileDoc = renderProfileForAgent(d.profile, d.schema);
+  const baseProfileDoc = renderProfileForAgent(d.profile, d.schema);
   const model = modelFor(d.settings, e.model);
   let cost = 0;
-  const agent = async (system: string, userPrompt: string, tools: string[]) => {
-    const r = await run({ prompt: userPrompt, systemAppend: system, tools, model, cwd: d.cwd, onEvent: (ev) => ev.type === 'tool' && log(`   🔎 ${ev.name} ${String(ev.input.query ?? ev.input.url ?? '').slice(0, 80)}`) });
+  const agent = async (system: string, userPrompt: string, tools: string[], readDirs?: string[]) => {
+    const r = await run({ prompt: userPrompt, systemAppend: system, tools, readDirs, model, effort: e.effort || undefined, cwd: d.cwd, signal: d.signal, onEvent: (ev) => {
+      if (ev.type === 'tool') log(`   🔎 ${ev.name} ${String(ev.input.query ?? ev.input.url ?? ev.input.file_path ?? ev.input.pattern ?? '').slice(0, 80)}`);
+      if (ev.type === 'switch') log(`   🔁 ${ev.from}: ${ev.reason} → 다음 AI 연결로 계속`);
+    } });
     cost += r.costUsd ?? 0;
     if (r.isError) throw new Error(r.text);
     return r.text;
@@ -85,6 +94,40 @@ export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<Essa
     input.postingUrl ? `공고/지원 페이지: ${input.postingUrl}` : '',
   ].filter(Boolean).join('\n');
   const byId = new Map(input.questions.map((q) => [q.id, q]));
+
+  // 0. 소재 폴더에서 소재 찾기 — 폴더만 읽고 웹은 쓰지 않는다 (파일 내용이 밖으로 나가지 않게)
+  let materials: EssayResult['materials'];
+  let materialsDoc = '';
+  const folders = scanFolders(((d.profile as Record<string, any>).stories?.folders ?? []) as { path?: string; note?: string }[]);
+  for (const f of folders.filter((x) => !x.ok)) log(`   ⚠️  소재 폴더 ${f.path}: ${f.error}`);
+  const usable = folders.filter((f) => f.ok && f.files.length);
+  if (usable.length) {
+    log(`④ 소재 폴더에서 소재를 찾습니다 (${usable.map((f) => `${path.basename(f.path)} ${f.files.length}개`).join(', ')})`);
+    const canRead = d.settings.llm.backend === 'claude-cli';
+    const inline = canRead ? null : inlineSources(usable);
+    const gatherText = await agent(
+      prompt('essay-gather.md'),
+      [
+        header,
+        '',
+        '## 자기소개서 문항',
+        questionList(input.questions),
+        '',
+        canRead ? '## 소재 폴더의 파일 목록 (이 폴더 안에서만 읽을 수 있습니다)' : '## 소재 폴더의 파일 내용',
+        canRead ? sourceIndex(usable) : inline!.text,
+      ].join('\n'),
+      canRead ? ['Read', 'Glob', 'Grep'] : [],
+      canRead ? usable.map((f) => f.path) : undefined,
+    );
+    const g = extractJson<{ materials?: Material[]; read?: string[] }>(gatherText);
+    const items = (g.materials ?? []).filter((m) => m && m.facts);
+    materials = { items, read: g.read ?? [], skipped: inline?.skipped ?? [], folders: usable.map((f) => f.path) };
+    materialsDoc = items.length
+      ? `\n\n### 소재 폴더에서 찾은 소재 (파일에 적힌 사실)\n${items.map((m, i) => `- 소재 ${i + 1}: ${m.title}${m.period ? ` (${m.period})` : ''}${m.role ? ` — ${m.role}` : ''}${m.fits?.length ? ` [어울리는 문항: ${m.fits.join(', ')}]` : ''}\n  ${m.facts.replace(/\n/g, ' ')}${m.source ? `\n  출처: ${m.source}` : ''}`).join('\n')}`
+      : '';
+    log(`   📂 소재 ${items.length}개 (읽은 파일 ${materials.read.length}개)`);
+  }
+  const profileDoc = baseProfileDoc + materialsDoc;
   const runChecks = (answers: EssayAnswer[]) => answers.map((a) => checkEssay(byId.get(a.id)!, a, e, blind));
   const complete = (answers: EssayAnswer[] | undefined, prev: EssayAnswer[] = []): EssayAnswer[] => {
     const got = new Map((answers ?? []).filter((a) => byId.has(a.id) && typeof a.text === 'string').map((a) => [a.id, a.text]));
@@ -156,6 +199,7 @@ export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<Essa
 
   return {
     input,
+    materials,
     research: draft.research,
     strategy: draft.strategy ?? [],
     answers,
@@ -170,6 +214,11 @@ export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<Essa
 
 export function formatEssays(r: EssayResult): string {
   const out: string[] = [`# 자기소개서 — ${[r.input.company, r.input.role].filter(Boolean).join(' ') || '(회사 모름)'}`, ''];
+  if (r.materials?.items.length) {
+    out.push('## 소재 폴더에서 찾은 소재', ...r.materials.items.map((m) => `- **${m.title}**${m.period ? ` (${m.period})` : ''}${m.source ? ` — ${m.source}` : ''}: ${m.facts.replace(/\n/g, ' ')}`));
+    if (r.materials.skipped.length) out.push(`- 읽지 못한 파일: ${r.materials.skipped.join(', ')}`);
+    out.push('');
+  }
   if (r.research) {
     out.push('## 회사 조사', r.research.company_summary, '');
     if (r.research.values?.length) out.push(`- 인재상/가치: ${r.research.values.join(', ')}`);

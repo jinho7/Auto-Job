@@ -21,7 +21,7 @@ const echoSpec = { server: 'echo', command: TSX, args: [path.join(paths.fixtures
 test('모델: 기능별 → AI 연결 → 방식별 기본', () => {
   assert.equal(modelFor(withLlm({ backend: 'claude-cli' })), undefined);
   assert.equal(modelFor(withLlm({ backend: 'claude-cli', model: 'claude-sonnet-5' })), 'claude-sonnet-5');
-  assert.equal(modelFor(withLlm({ backend: 'anthropic-api' })), 'claude-sonnet-5');
+  assert.equal(modelFor(withLlm({ backend: 'anthropic-api' })), 'claude-opus-5');
   assert.equal(modelFor(withLlm({ backend: 'openai-api', model: 'x' }), 'y'), 'y');
 });
 
@@ -61,12 +61,14 @@ test('Codex: 인자(읽기 전용, 웹 검색, MCP), 지시문을 앞에 붙이�
 function fakeFetch(responses: unknown[]) {
   const bodies: any[] = [];
   const headers: Record<string, string>[] = [];
-  const f = (async (_url: string, init: RequestInit) => {
+  const urls: string[] = [];
+  const f = (async (url: string | URL | Request, init: RequestInit) => {
+    urls.push(String(url));
     bodies.push(JSON.parse(String(init.body)));
-    headers.push(init.headers as Record<string, string>);
-    return new Response(JSON.stringify(responses[bodies.length - 1]), { status: 200 });
+    headers.push(Object.fromEntries(new Headers(init.headers as HeadersInit).entries()));
+    return new Response(JSON.stringify(responses[bodies.length - 1]), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
-  return { f, bodies, headers };
+  return { f, bodies, headers, urls };
 }
 
 const fakeHost = (): ToolHost & { calls: string[] } => {
@@ -145,4 +147,65 @@ test('연결 확인: 답이 오면 성공, 오류면 이유', async () => {
   assert.match(ok.message, /Claude Code.*연결됨/);
   const bad = await testAi(withLlm({ backend: 'claude-cli' }), async () => ({ text: 'Invalid API key · Please run /login', isError: true }));
   assert.deepEqual([bad.ok, bad.message], [false, 'Invalid API key · Please run /login']);
+});
+
+test('Claude Code: 읽을 폴더는 --add-dir 로만 열고, 파일 도구는 허용 목록에 넣지 않는다 (폴더 밖은 거절되게)', async () => {
+  const { mkdirSync, writeFileSync, chmodSync } = await import('node:fs');
+  const dir = tempDir();
+  const bin = path.join(dir, 'bin');
+  mkdirSync(bin);
+  // 받은 인자를 기록하고 결과 한 줄을 내는 가짜 claude
+  writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${dir}/args.txt"\ncat > /dev/null\necho '{"type":"result","result":"ok","is_error":false}'\n`);
+  chmodSync(path.join(bin, 'claude'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  try {
+    const { runClaudeAgent } = await import('../src/llm/claude-cli');
+    await runClaudeAgent({ prompt: 'p', systemAppend: 's', tools: ['Read', 'Glob', 'Grep'], readDirs: ['/stories/a', '/stories/b'], cwd: dir });
+  } finally {
+    process.env.PATH = oldPath;
+  }
+  const args = readFileSync(path.join(dir, 'args.txt'), 'utf8').split('\n');
+  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep');
+  assert.ok(!args.includes('--allowedTools')); // 파일 도구만 있으면 허용 목록 없음 → 작업 폴더 밖 읽기는 dontAsk 로 거절
+  assert.deepEqual(args.flatMap((a, i) => (a === '--add-dir' ? [args[i + 1]] : [])), ['/stories/a', '/stories/b']);
+});
+
+test('연결별 계정 폴더: Claude Code 는 CLAUDE_CONFIG_DIR, Codex 는 CODEX_HOME 으로 넘긴다', async () => {
+  const { mkdirSync, writeFileSync, chmodSync } = await import('node:fs');
+  const { runOnConnection } = await import('../src/llm');
+  const dir = tempDir();
+  const bin = path.join(dir, 'bin');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\necho "$CLAUDE_CONFIG_DIR" > "${dir}/env.txt"\ncat > /dev/null\necho '{"type":"result","result":"ok","is_error":false}'\n`);
+  chmodSync(path.join(bin, 'claude'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  try {
+    const r = await runOnConnection(base, { id: 'c2', type: 'claude-cli', label: '', model: '', effort: '', account_dir: path.join(dir, 'acct'), enabled: true }, { prompt: 'p', systemAppend: 's', cwd: dir });
+    assert.equal(r.text, 'ok');
+  } finally {
+    process.env.PATH = oldPath;
+  }
+  assert.equal(readFileSync(path.join(dir, 'env.txt'), 'utf8').trim(), path.join(dir, 'acct'));
+});
+
+test('Anthropic API (최신 모델): 새 웹 도구, 추론 성능(output_config.effort), 거절 대체(fallbacks)', async () => {
+  const { f, bodies, headers, urls } = fakeFetch([{ stop_reason: 'end_turn', content: [{ type: 'text', text: '끝' }] }]);
+  await runApiAgent('anthropic', { prompt: 'p', systemAppend: 's', tools: ['WebSearch'], effort: 'xhigh', cwd: tempDir() }, { apiKey: 'k', model: 'claude-opus-5', fetchImpl: f });
+  assert.deepEqual(bodies[0].tools.map((t: { type: string }) => t.type), ['web_search_20260209', 'web_fetch_20260209']);
+  assert.deepEqual(bodies[0].output_config, { effort: 'xhigh' });
+  assert.equal(bodies[0].fallbacks, 'default');
+  assert.match(headers[0]['anthropic-beta'] ?? '', /server-side-fallback-2026-07-01/);
+  assert.match(urls[0], /\/v1\/messages/);
+  // Haiku 는 effort 를 보내지 않는다
+  const h = fakeFetch([{ stop_reason: 'end_turn', content: [{ type: 'text', text: '끝' }] }]);
+  await runApiAgent('anthropic', { prompt: 'p', systemAppend: 's', effort: 'high', cwd: tempDir() }, { apiKey: 'k', model: 'claude-haiku-4-5', fetchImpl: h.f });
+  assert.equal(h.bodies[0].output_config, undefined);
+});
+
+test('추론 성능: Claude Code 는 --effort, Codex 는 model_reasoning_effort (최대는 high 로)', () => {
+  const dir = tempDir();
+  const args = codexArgs({ prompt: 'p', systemAppend: 's', effort: 'max', cwd: dir }, path.join(dir, 'l'));
+  assert.ok(args.includes('model_reasoning_effort="high"'));
 });

@@ -137,3 +137,57 @@ test('작성 흐름: AI 가 오류로 끝나면 알려준다', async () => {
     /사용량 한도/,
   );
 });
+
+test('소재 폴더: md·txt·pdf 만, 숨김·node_modules 제외, 없는 폴더는 이유', async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const path = (await import('node:path')).default;
+  const { scanFolder, sourceIndex, inlineSources } = await import('../src/essay/sources');
+  const dir = tempDir();
+  mkdirSync(path.join(dir, '프로젝트'), { recursive: true });
+  mkdirSync(path.join(dir, 'node_modules', 'x'), { recursive: true });
+  mkdirSync(path.join(dir, '.git'), { recursive: true });
+  writeFileSync(path.join(dir, '프로젝트', '회고.md'), '# 채팅 서버\n동시 접속 500명 처리');
+  writeFileSync(path.join(dir, '이력서.pdf'), '%PDF-1.4');
+  writeFileSync(path.join(dir, '메모.txt'), '동아리 활동');
+  writeFileSync(path.join(dir, '사진.png'), 'x');
+  writeFileSync(path.join(dir, 'node_modules', 'x', 'README.md'), 'no');
+  writeFileSync(path.join(dir, '.git', 'HEAD.md'), 'no');
+  const f = scanFolder(dir, '경험 정리');
+  assert.equal(f.ok, true);
+  assert.deepEqual(f.files.map((x) => x.rel).sort(), ['메모.txt', '이력서.pdf', path.join('프로젝트', '회고.md')].sort());
+  assert.match(sourceIndex([f]), /회고\.md \(md/);
+  const inline = inlineSources([f]);
+  assert.match(inline.text, /동시 접속 500명/);
+  assert.match(inline.skipped.join(), /이력서\.pdf/);
+  assert.deepEqual([scanFolder(path.join(dir, '없음')).ok, scanFolder(path.join(dir, '메모.txt')).error], [false, '폴더가 아닙니다']);
+});
+
+test('작성 흐름: 소재 폴더가 있으면 먼저 폴더만 읽어 소재를 찾고(웹 없음), 찾은 소재로 쓴다', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const path = (await import('node:path')).default;
+  const dir = tempDir();
+  writeFileSync(path.join(dir, '회고.md'), '채팅 서버');
+  const store = freshProfile();
+  store.addItem('stories.folders', { path: dir });
+  const calls: AgentRun[] = [];
+  const fake = async (o: AgentRun) => {
+    calls.push(o);
+    if (/소재 찾기/.test(o.systemAppend)) return { text: '```json\n{"materials":[{"title":"채팅 서버 개발","source":"회고.md","facts":"동시 접속 500명","fits":[1]}],"read":["회고.md"]}\n```', isError: false };
+    return { text: '```json\n{"answers":[{"id":1,"text":"[채팅] 동시 접속 500명을 처리했습니다."}]}\n```', isError: false };
+  };
+  const r = await writeEssays({ company: 'A', role: '백엔드', questions: [q({ maxChars: 0 })] }, { settings: { ...base, essay: essay({ subtitle: true, max_revisions: 0 }) }, profile: store.toJSON(), schema: store.schema, cwd: tempDir(), runAgent: fake });
+  const gather = calls[0];
+  assert.deepEqual(gather.tools, ['Read', 'Glob', 'Grep']); // 웹 도구 없음
+  assert.deepEqual(gather.readDirs, [dir]);
+  assert.match(gather.prompt, /회고\.md/);
+  assert.ok(!calls[1].readDirs && calls[1].tools?.includes('WebSearch')); // 글쓰기는 웹만, 파일은 못 읽음
+  assert.match(calls[1].prompt, /소재 폴더에서 찾은 소재[\s\S]*동시 접속 500명/);
+  assert.equal(r.materials?.items[0].title, '채팅 서버 개발');
+  assert.match(formatEssays(r), /## 소재 폴더에서 찾은 소재/);
+
+  // 파일을 직접 못 읽는 AI 연결 방식: 글 파일 내용을 붙여 주고 파일 도구는 주지 않는다
+  calls.length = 0;
+  await writeEssays({ company: 'A', role: '', questions: [q({ maxChars: 0 })] }, { settings: { ...base, llm: { ...base.llm, backend: 'anthropic-api' }, essay: essay({ max_revisions: 0 }) }, profile: store.toJSON(), schema: store.schema, cwd: tempDir(), runAgent: fake });
+  assert.deepEqual([calls[0].tools, calls[0].readDirs], [[], undefined]);
+  assert.match(calls[0].prompt, /=== 회고\.md ===\n채팅 서버/);
+});

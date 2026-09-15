@@ -102,7 +102,7 @@ export function emptyFields(fields: Fields): Record<string, unknown> {
 
 const FORMAT_HINT: Partial<Record<ScalarType, string>> = {
   date: 'YYYY.MM.DD',
-  month: 'YYYY.MM',
+  month: 'YYYY.MM (일까지 적어도 됨)',
   number: '숫자',
   file: 'profile/me/files/ 안의 파일 이름',
   longtext: '여러 줄',
@@ -124,7 +124,7 @@ export function describe(field: Field): string {
 }
 
 const DATE_RE = /^\d{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12]\d|3[01])$/;
-const MONTH_RE = /^\d{4}\.(0[1-9]|1[0-2])$/;
+const MONTH_RE = /^\d{4}\.(0[1-9]|1[0-2])(\.(0[1-9]|[12]\d|3[01]))?$/;
 
 /** 비어 있지 않은 값의 형식을 검사한다. 문제가 없으면 null */
 export function validateScalar(field: ScalarField, value: string, filesDir?: string): string | null {
@@ -133,7 +133,7 @@ export function validateScalar(field: ScalarField, value: string, filesDir?: str
       if (!DATE_RE.test(value)) return '날짜는 YYYY.MM.DD 형식입니다 (예: 2019.03.02)';
       break;
     case 'month':
-      if (!MONTH_RE.test(value)) return '연월은 YYYY.MM 형식입니다 (예: 2019.03)';
+      if (!MONTH_RE.test(value)) return '연월은 YYYY.MM 형식입니다 (예: 2019.03, 일까지 2019.03.02)';
       break;
     case 'number':
       if (!/^\d+(\.\d+)?$/.test(value)) return '숫자만 입력합니다 (예: 3.85)';

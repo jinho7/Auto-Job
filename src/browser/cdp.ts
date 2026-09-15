@@ -36,9 +36,22 @@ function launch(cfg: CdpBrowserConfig): void {
   child.unref();
 }
 
+/** 여러 지원서를 함께 시작할 때 브라우저를 두 번 띄우지 않도록 */
+let ready: Promise<void> | null = null;
+
 /** 이미 떠 있으면 붙고, 없으면 띄운 뒤 붙는다. */
 export async function connectCdp(cfg: CdpBrowserConfig, timeoutMs = 20_000): Promise<Browser> {
-  if (!(await cdpVersion(cfg.cdp_port))) {
+  // 확인과 실행을 한 약속으로 묶어, 동시에 불려도 브라우저는 한 번만 띄운다
+  ready ??= (async () => {
+    if (!(await cdpVersion(cfg.cdp_port))) await startAndWait(cfg, timeoutMs);
+  })().finally(() => (ready = null));
+  await ready;
+  await ensureWindow(cfg.cdp_port);
+  return chromium.connectOverCDP(`http://127.0.0.1:${cfg.cdp_port}`);
+}
+
+async function startAndWait(cfg: CdpBrowserConfig, timeoutMs: number): Promise<void> {
+  {
     console.log(`🚀 ${path.basename(cfg.app)} 실행 (프로필: ${cfg.profile_dir}, 포트: ${cfg.cdp_port})`);
     launch(cfg);
     const deadline = Date.now() + timeoutMs;
@@ -47,8 +60,6 @@ export async function connectCdp(cfg: CdpBrowserConfig, timeoutMs = 20_000): Pro
       await new Promise((r) => setTimeout(r, 300));
     }
   }
-  await ensureWindow(cfg.cdp_port);
-  return chromium.connectOverCDP(`http://127.0.0.1:${cfg.cdp_port}`);
 }
 
 /**
