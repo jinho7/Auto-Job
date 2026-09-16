@@ -41,6 +41,8 @@ const PLACEHOLDER_OPTION = /^(선택|--|-|select|choose|전체)/i;
 export class ApplyTools {
   readonly log: ToolLog[] = [];
   private active: Page;
+  /** 지원서 입력 단계에 들어갔는가 (그 뒤로는 "지원하기" 계열까지 막는다) */
+  private armed = false;
 
   private constructor(
     private readonly browser: Browser,
@@ -50,6 +52,8 @@ export class ApplyTools {
     private readonly filesDir: string,
     /** 지원서 탭과, 거기서 열린 팝업들 (열린 순서) */
     private readonly owned: Set<Page>,
+    /** 제출 차단 가드 (입력을 시작하면 arm 해서 "지원하기" 계열까지 막는다) */
+    private readonly guard: { arm: () => Promise<void> },
     /** 뒤에서 도는 지원서인가 (그렇다면 창을 앞으로 끌어오지 않는다) */
     private readonly background = false,
   ) {
@@ -63,8 +67,11 @@ export class ApplyTools {
     let main: Page | undefined;
     for (const p of context.pages()) if ((await targetIdOf(context, p).catch(() => '')) === targetId) main = p;
     if (!main) throw new Error('지원서 탭을 찾지 못했습니다. 탭을 닫았다면 다시 시작해 주세요.');
-    const guard = await installGuard(main, settings.browser.guard, { armed: true });
-    const tools = new ApplyTools(browser, context, main, settings, filesDir, guard.pages, !!opts.background);
+    // 처음에는 arm 하지 않는다: 공고 목록에서 "지원하기" 를 눌러 지원서 화면까지 들어가야 하기 때문.
+    // 지원서 화면에 닿거나 입력을 시작하면 스스로 arm 해서, 그 뒤로는 "지원하기" 계열도 모두 막는다.
+    const guard = await installGuard(main, settings.browser.guard, { armed: false });
+    const tools = new ApplyTools(browser, context, main, settings, filesDir, guard.pages, guard, !!opts.background);
+    await tools.armIfFormPage();
     // 내 탭의 대화상자만 처리 (컨텍스트 리스너가 있으면 다른 탭 대화상자는 자동으로 닫히지 않는다)
     context.on('dialog', (d) => {
       if (guard.owns(d.page())) void tools.onDialog(d);
@@ -74,6 +81,33 @@ export class ApplyTools {
 
   async close(): Promise<void> {
     await this.browser.close(); // CDP 연결만 끊는다
+  }
+
+  get isArmed(): boolean {
+    return this.armed;
+  }
+
+  /** 지원서 입력 단계로 들어간다: 이제부터 "지원하기" 계열 버튼도 막고, 다른 페이지로 가는 링크도 막는다 */
+  private async arm(why: string): Promise<void> {
+    if (this.armed) return;
+    this.armed = true;
+    await this.guard.arm();
+    this.record({ tool: 'guard', ok: true, message: `${why} — 이제부터 "지원하기"·제출 계열 버튼과 페이지를 떠나는 링크를 모두 막습니다.` });
+  }
+
+  /** 지금 화면이 지원서 입력 화면처럼 보이면(입력칸이 여러 개) 바로 arm 한다 */
+  async armIfFormPage(): Promise<void> {
+    if (this.armed) return;
+    let fields = 0;
+    for (const f of this.page().frames()) {
+      fields += Number(
+        await f
+          .evaluate('document.querySelectorAll("input:not([type=hidden]):not([type=search]):not([type=submit]):not([type=button]), textarea, select").length')
+          .catch(() => 0),
+      );
+    }
+    // 공고 목록·상세에는 검색창 정도만 있고, 지원서(자기소개서 포함) 화면에는 입력칸이 여러 개다
+    if (fields >= 3) await this.arm(`입력칸이 ${fields}개인 지원서 화면입니다`);
   }
 
   private record(entry: ToolLog): string {
@@ -201,6 +235,7 @@ export class ApplyTools {
     await loc.dispatchEvent('change').catch(() => {});
     await loc.evaluate((el) => (el as HTMLElement).blur()).catch(() => {});
     const after = (await this.describe(loc)).value;
+    await this.arm('입력을 시작했습니다');
     return this.record({ tool: 'fill', ref, value, ok: true, message: `입력함: "${after}"${after !== v ? ` (사이트가 "${v}"를 "${after}"로 바꿨습니다)` : ''}` });
   }
 
@@ -217,6 +252,7 @@ export class ApplyTools {
       return this.record({ tool: 'select', ref, value: option, ok: false, message: `이미 "${cur}" 이(가) 선택되어 있어 건드리지 않았습니다.` });
     }
     await loc.selectOption({ index: pick.i });
+    await this.arm('입력을 시작했습니다');
     return this.record({ tool: 'select', ref, value: pick.text, ok: true, message: `선택함: "${pick.text}"` });
   }
 
@@ -236,27 +272,51 @@ export class ApplyTools {
     // 디자인 때문에 숨겨진 라디오도 있어, 요소 자체의 click 으로 선택한다 (라벨/버튼 문구 검사는 click 과 같다)
     await loc.check({ timeout: 2000 }).catch(() => loc.evaluate((el) => (el as HTMLElement).click()));
     const ok = (await this.describe(loc)).checked;
+    if (ok) await this.arm('입력을 시작했습니다');
     return this.record({ tool: 'check', ref, ok, message: ok ? '선택함' : '선택되지 않았습니다. 라벨 버튼을 click 해 보세요.' });
   }
 
   async click(ref: string): Promise<string> {
     const loc = await this.locate(ref);
     const d = await this.describe(loc);
-    const verdict = checkLabel(d.label, this.settings.browser.guard, true);
+    const verdict = checkLabel(d.label, this.settings.browser.guard, this.armed);
     if (verdict.blocked) return this.record({ tool: 'click', ref, label: d.label, ok: false, message: `"${d.label}" 은(는) 제출 계열 버튼이라 누르지 않습니다 (금지어: ${verdict.keyword}).` });
     if (DATA_LOSS.test(d.label)) return this.record({ tool: 'click', ref, label: d.label, ok: false, message: `"${d.label}" 은(는) 입력한 내용을 지우거나 페이지를 떠날 수 있어 누르지 않습니다.` });
     if (d.tag === 'a' && d.href && !/^(#|javascript:)/i.test(d.href) && d.target !== '_blank') {
       const here = new URL(this.page().url());
       const to = new URL(d.href, here);
-      if (to.origin !== here.origin || to.pathname !== here.pathname) {
-        return this.record({ tool: 'click', ref, label: d.label, ok: false, message: `"${d.label}" 링크는 지원서 페이지를 떠나서 누르지 않습니다.` });
+      // 입력을 시작하기 전(공고 목록 → 상세 → 지원서)에는 같은 사이트 안에서 옮겨 다닐 수 있다.
+      // 입력을 시작한 뒤에는 쓰던 내용을 잃지 않도록 같은 페이지 안에서만 움직인다.
+      const leaving = this.armed ? to.origin !== here.origin || to.pathname !== here.pathname : to.origin !== here.origin;
+      if (leaving) {
+        return this.record({ tool: 'click', ref, label: d.label, ok: false, message: `"${d.label}" 링크는 ${this.armed ? '지원서 페이지를 떠나서' : '다른 사이트로 가서'} 누르지 않습니다.` });
       }
     }
     const before = this.owned.size;
     await loc.click({ timeout: 5000 });
     await this.page().waitForTimeout(700);
     const opened = this.owned.size > before ? ` 새 창이 열렸습니다 → pages / use_page ${this.openPages().length - 1}` : '';
+    await this.armIfFormPage(); // 눌러서 지원서 화면에 닿았으면 그 자리에서 잠근다
     return this.record({ tool: 'click', ref, label: d.label, ok: true, message: `눌렀습니다: "${d.label}".${opened}` });
+  }
+
+  /** 같은 사이트 안에서 주소로 이동 (공고 목록 → 상세 → 지원서). 입력을 시작한 뒤에는 쓰던 내용을 잃지 않도록 막는다 */
+  async goto(url: string): Promise<string> {
+    if (this.armed) throw new ToolError('이미 지원서를 쓰는 중이라 다른 주소로 옮기지 않습니다. 지금 화면에서 하세요.');
+    let to: URL;
+    try {
+      to = new URL(url, this.page().url());
+    } catch {
+      throw new ToolError('주소가 올바르지 않습니다.');
+    }
+    const here = new URL(this.page().url());
+    if (to.origin !== here.origin) throw new ToolError(`다른 사이트(${to.origin})로는 가지 않습니다. 지금 사이트(${here.origin}) 안에서만 옮길 수 있습니다.`);
+    await this.page().goto(to.href, { waitUntil: 'domcontentloaded' }).catch((e) => {
+      throw new ToolError(`이동하지 못했습니다: ${(e as Error).message.slice(0, 120)}`);
+    });
+    await this.page().waitForTimeout(700);
+    await this.armIfFormPage();
+    return this.record({ tool: 'goto', value: to.href, ok: true, message: `${to.href} 로 옮겼습니다.` });
   }
 
   async press(ref: string, key: string): Promise<string> {
@@ -272,6 +332,7 @@ export class ApplyTools {
     if (!existsSync(file)) throw new ToolError(`profile/me/files/${path.basename(fileName)} 파일이 없습니다.`);
     const loc = await this.locate(ref);
     await loc.setInputFiles(file);
+    await this.arm('파일을 올렸습니다');
     return this.record({ tool: 'upload', ref, value: path.basename(file), ok: true, message: `올렸습니다: ${path.basename(file)}` });
   }
 

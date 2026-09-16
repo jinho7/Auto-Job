@@ -88,6 +88,12 @@ export async function main(): Promise<void> {
       required: ['ref', 'file'],
       run: (a) => tools.upload(str(a, 'ref'), str(a, 'file')).then((m) => report(m, 'upload')),
     },
+    goto: {
+      description: '같은 사이트 안에서 주소로 옮깁니다 (공고 목록 → 공고 상세 → 지원서 화면). 입력을 시작한 뒤에는 쓸 수 없습니다.',
+      props: { url: { type: 'string', description: '옮길 주소 (지금 사이트 안)' } },
+      required: ['url'],
+      run: (a) => tools.goto(str(a, 'url')).then((m) => report(m, 'goto')),
+    },
     pages: { description: '열린 창 목록 (지원서 + 팝업).', run: async () => tools.pages() },
     use_page: {
       description: '다른 창(팝업 등)으로 전환합니다. 팝업이 닫히면 자동으로 지원서 창으로 돌아옵니다.',
