@@ -13,7 +13,14 @@ import type { EssayAnswer, EssayQuestion, Research, Strategy } from './types';
 
 export type Review = { id: number; verdict: 'ok' | 'revise'; unsupported_claims?: string[]; problems?: string[]; suggestions?: string[] };
 
-export type EssayInput = { company: string; role: string; postingUrl?: string; questions: EssayQuestion[] };
+export type EssayInput = {
+  company: string;
+  role: string;
+  postingUrl?: string;
+  questions: EssayQuestion[];
+  /** 지원 전에 이미 조사한 내용 (다시 조사하지 않고, 부족한 것만 보충) */
+  known?: string;
+};
 
 export type Material = { title: string; source?: string; period?: string; role?: string; facts: string; fits?: number[] };
 
@@ -92,6 +99,7 @@ export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<Essa
     `지원 회사: ${input.company || '(모름)'}`,
     `지원 직무: ${input.role || '(모름)'}`,
     input.postingUrl ? `공고/지원 페이지: ${input.postingUrl}` : '',
+    input.known ? `\n## 지원 전에 이미 조사한 내용 (다시 조사할 필요 없음. 부족한 것만 보충하세요)\n${input.known}` : '',
   ].filter(Boolean).join('\n');
   const byId = new Map(input.questions.map((q) => [q.id, q]));
 

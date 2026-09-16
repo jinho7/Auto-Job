@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { lastImport } from '../browser/default-profile';
 import { BrowserSession } from '../browser/session';
 import { loadSettings, type Settings } from '../config';
 import { parseLimit } from '../essay/checks';
@@ -21,6 +22,7 @@ import { loadSchema } from '../profile/schema';
 import { ProfileStore } from '../profile/store';
 import { parseNotionId } from '../settings/store';
 import { startBridge, type BridgeEvent } from './bridge';
+import { collectPageText, preResearch, preResearchContent, preResearchDoc, type PreResearch } from './research';
 import { renderProfileForAgent } from './profile-doc';
 import { ApplyTools, targetIdOf } from './tools';
 
@@ -169,6 +171,15 @@ export function buildPageContent(x: {
   };
 }
 
+/** 자동화 프로필에 평소 프로필의 비밀번호를 아직 안 가져왔으면 로그인 대기 때 알려 준다 */
+export function loginHelp(settings: Settings, mark = lastImport): string {
+  const driver = settings.browser.driver === 'chrome' ? 'chrome' : 'aside';
+  const m = mark(settings, driver);
+  if (!m) return '   💡 이 창은 자동화 전용 프로필이라 평소 쓰는 프로필의 저장된 비밀번호가 없습니다. 설정 → 브라우저 → "비밀번호 가져오기"를 한 번 하면 다음부터 로그인 칸이 자동 완성됩니다 (로그인 상태까지 가져오면 로그인 자체를 건너뛸 수 있습니다).';
+  if (!m.cookies) return '   💡 저장된 비밀번호는 가져와 둔 프로필입니다. 로그인 칸을 누르면 자동 완성이 뜹니다.';
+  return '   💡 평소 프로필의 로그인 상태까지 가져와 둔 프로필입니다. 이미 로그인되어 있으면 바로 지원서 화면으로 가면 됩니다.';
+}
+
 export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const log = o.log ?? console.log;
   const notify = o.notify ?? notifyMac;
@@ -201,15 +212,56 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   let bridge: Awaited<ReturnType<typeof startBridge>> | null = null;
   let agent: AgentResult = { text: '', isError: false, costUsd: 0 };
   let essay: EssayStepReport | undefined;
+  let pre: PreResearch | null = null;
   try {
     await session.goto(target.link);
     await session.bringToFront();
     const targetId = await targetIdOf(session.context, session.page);
 
+    // ①-2 로그인 전에: 지원 페이지와 회사 정보를 정리하고 지원 직무를 고른다 → Notion 절차 / 회사 소개 / 지원 직무
+    if (settings.apply.pre_research) {
+      log('① 지원 페이지와 회사 정보를 먼저 정리하고 지원 직무를 고릅니다');
+      try {
+        const pageText = await collectPageText(session.page);
+        pre = await preResearch({
+          settings,
+          company: target.company,
+          link: target.link,
+          notionRoles: target.role,
+          pageText,
+          profileDoc: renderProfileForAgent(store.toJSON(), store.schema, { sections: ['target', 'education', 'career', 'extras'] }),
+          cwd: dir,
+          log,
+          signal: o.signal,
+        });
+        if (pre.roles.length) log(`   📋 모집 직무: ${pre.roles.map((r) => r.title).join(', ')}`);
+        log(pre.chosen ? `   🎯 지원 직무: ${pre.chosen.title}${pre.chosen.reason ? ` — ${pre.chosen.reason}` : ''}` : `   ⚠️  지원 직무를 고르지 못했습니다${pre.note ? `: ${pre.note}` : ''}`);
+        if (pre.procedure.length) log(`   🧭 전형 절차: ${pre.procedure.join(' → ')}${pre.procedure_source === 'web' ? ' (웹에서 찾음)' : ''}`);
+        if (pre.company.summary) log(`   🏢 ${pre.company.summary.slice(0, 120)}`);
+        if (settings.apply.update_notion && target.notionPageId && getSecret('NOTION_TOKEN')) {
+          const sections = await fillPageSections(notionClient(), target.notionPageId, preResearchContent(pre), settings.notion.section_map);
+          const done = sections.filter((x) => x.status === 'filled' || x.status === 'added_heading').map((x) => x.title);
+          const kept = sections.filter((x) => x.status === 'skipped_has_content').map((x) => x.title);
+          log(`   📝 Notion 정리: ${done.join(', ') || '새로 채운 섹션 없음'}${kept.length ? ` (이미 내용이 있어 둠: ${kept.join(', ')})` : ''}`);
+        }
+      } catch (e) {
+        if (o.signal?.aborted) throw e;
+        log(`   ⚠️  미리 정리하지 못했습니다 (계속 진행): ${(e as Error).message.slice(0, 160)}`);
+      }
+    }
+
     // ② 로그인 대기 — 사람만 하는 일
     if (!o.skipLoginWait) {
       notify('Auto-Job 지원서', '브라우저에서 로그인/본인인증을 마치고 지원서 입력 화면으로 이동해 주세요');
-      const a = await o.ask('② 브라우저 창에서 직접 해 주세요: 회원가입·로그인·본인인증·약관 동의 → 지원서의 인적사항 입력 화면까지 이동.\n   다 되면 알려 주세요 (터미널은 Enter, 대화창은 아무 말이나 / 그만두려면 q 또는 "중지")');
+      const a = await o.ask(
+        [
+          '② 브라우저 창에서 직접 해 주세요: 회원가입·로그인·본인인증·약관 동의 → 지원서의 인적사항 입력 화면까지 이동.',
+          loginHelp(settings),
+          '   다 되면 알려 주세요 (터미널은 Enter, 대화창은 아무 말이나 / 그만두려면 q 또는 "중지")',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
       if (/^(q|중지|그만|취소)$/i.test(a.trim())) throw new Error('사용자가 중단했습니다');
     }
 
@@ -281,7 +333,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
         log(`   문항 ${essay.questions.length}개: ${essay.questions.map((q) => `${q.id}번${q.maxChars ? `(${q.maxChars}자)` : ''}`).join(', ')}`);
 
         essay.result = await writeEssays(
-          { company: target.company, role: got?.role || target.role || '', postingUrl: target.link, questions: essay.questions },
+          { company: target.company, role: got?.role || pre?.chosen?.title || target.role || '', postingUrl: target.link, questions: essay.questions, known: pre ? preResearchDoc(pre) : undefined },
           { settings, profile: store.toJSON(), schema: store.schema, cwd: dir, log, signal: o.signal },
         );
         essay.file = path.join(dir, 'essays.md');
@@ -338,7 +390,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       notionReport = { sections: [] };
       try {
         const client = notionClient();
-        const content = buildPageContent({ essay, formInfo: formInfo as typeof formInfo, role: (found as { role: string } | null)?.role || target.role, uploads: actions.filter((a) => a.tool === 'upload' && a.ok).map((a) => a.value ?? '') });
+        const content = buildPageContent({ essay, formInfo: formInfo as typeof formInfo, role: (found as { role: string } | null)?.role || pre?.chosen?.title || target.role, uploads: actions.filter((a) => a.tool === 'upload' && a.ok).map((a) => a.value ?? '') });
         notionReport.sections = await fillPageSections(client, target.notionPageId, content, settings.notion.section_map);
         for (const r of notionReport.sections) if (r.status !== 'no_data') log(`   ${r.status === 'skipped_has_content' ? '⏭️  이미 내용이 있어 둠' : '📝 채움'}: ${r.title}`);
         if (essay?.error || (steps.includes('basic') && agent.isError)) {

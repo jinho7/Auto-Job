@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { importPasswords, listProfiles } from '../src/browser/default-profile';
+import { importPasswords, lastImport, listProfiles } from '../src/browser/default-profile';
+import { loginHelp } from '../src/apply/run';
 import { parseSettings, type Settings } from '../src/config';
 import { agentFor, modelForConnection } from '../src/llm';
 import type { AgentRun } from '../src/llm/claude-cli';
@@ -106,7 +107,8 @@ test('기본 프로필 비밀번호 가져오기: 비밀번호 파일만 복사,
   mkdirSync(path.join(data, 'Profile 1'), { recursive: true });
   writeFileSync(path.join(data, 'Local State'), JSON.stringify({ profile: { info_cache: { 'Profile 1': { name: '내 프로필' } } } }));
   writeFileSync(path.join(data, 'Profile 1', 'Login Data'), 'SRC-LOGIN');
-  writeFileSync(path.join(data, 'Profile 1', 'Cookies'), 'SRC-COOKIES');
+  mkdirSync(path.join(data, 'Profile 1', 'Network'), { recursive: true });
+  writeFileSync(path.join(data, 'Profile 1', 'Network', 'Cookies'), 'SRC-COOKIES');
   assert.deepEqual(listProfiles(data), [{ dir: 'Profile 1', name: '내 프로필' }]);
   const auto = tempDir();
   mkdirSync(path.join(auto, 'Default'), { recursive: true });
@@ -116,7 +118,21 @@ test('기본 프로필 비밀번호 가져오기: 비밀번호 파일만 복사,
   assert.deepEqual(r.copied, ['Login Data']);
   assert.equal(readFileSync(path.join(auto, 'Default', 'Login Data'), 'utf8'), 'SRC-LOGIN');
   assert.ok(existsSync(path.join(auto, 'Default', `Login Data.bak-${'2026-09-15T00-00-00-000Z'}`)));
-  assert.ok(!existsSync(path.join(auto, 'Default', 'Cookies'))); // 쿠키는 가져오지 않음
+  assert.ok(!existsSync(path.join(auto, 'Default', 'Network', 'Cookies'))); // 안 고르면 쿠키는 가져오지 않음
+  assert.deepEqual(lastImport(settings, 'aside'), { at: '2026-09-15T00:00:00.000Z', profile: 'Profile 1', files: ['Login Data'], cookies: false });
   await assert.rejects(importPasswords({ settings, driver: 'aside', profile: '../etc', dataDir: data }), /프로필 이름/);
   await assert.rejects(importPasswords({ settings, driver: 'aside', profile: 'Default', dataDir: data }), /비밀번호 파일이 없습니다/);
+
+  // 로그인 상태까지 고르면 쿠키도 복사하고 기록을 남긴다
+  const r2 = await importPasswords({ settings, driver: 'aside', profile: 'Profile 1', cookies: true, dataDir: data, now: new Date('2026-09-16T00:00:00Z') });
+  assert.deepEqual(r2.copied, ['Login Data', path.join('Network', 'Cookies')]);
+  assert.equal(readFileSync(path.join(auto, 'Default', 'Network', 'Cookies'), 'utf8'), 'SRC-COOKIES');
+  assert.equal(lastImport(settings, 'aside')?.cookies, true);
+});
+
+test('로그인 대기 안내: 아직 안 가져왔으면 가져오라고 알려 준다', () => {
+  const settings: Settings = { ...base, browser: { ...base.browser, aside: { ...base.browser.aside, profile_dir: tempDir() } } };
+  assert.match(loginHelp(settings), /비밀번호 가져오기/);
+  assert.match(loginHelp(settings, () => ({ at: '', profile: 'Default', files: ['Login Data'], cookies: false })), /자동 완성/);
+  assert.match(loginHelp(settings, () => ({ at: '', profile: 'Default', files: ['Login Data'], cookies: true })), /로그인 상태까지/);
 });

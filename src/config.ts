@@ -156,6 +156,8 @@ export const settingsSchema = z.object({
       /** 비우면 AI 연결의 기본 모델 */
       model: z.string().default(''),
       effort: EFFORT,
+      /** 로그인 전에 지원 페이지·회사 정보를 정리하고 지원 직무를 골라 Notion 에 먼저 넣는다 */
+      pre_research: z.boolean().default(true),
       /** 설정 화면에서 지원서를 여러 개 맡길 때 동시에 진행할 개수 (나머지는 차례를 기다림) */
       max_parallel: z.number().int().min(1).max(8).default(4),
       /** 다 쓰고 나서 누를 임시저장 버튼 문구 (앞에 있는 것부터 찾음) */
@@ -165,7 +167,7 @@ export const settingsSchema = z.object({
       /** Notion 페이지 본문 정리와 제출 상태 변경을 할지 */
       update_notion: z.boolean().default(true),
     })
-    .default({ extra_rules: [], model: '', effort: '', max_parallel: 4, save_buttons: ['임시저장', '임시 저장', '중간저장', '저장하기', '저장'], save_draft: true, update_notion: true }),
+    .default({ extra_rules: [], model: '', effort: '', pre_research: true, max_parallel: 4, save_buttons: ['임시저장', '임시 저장', '중간저장', '저장하기', '저장'], save_draft: true, update_notion: true }),
   essay: z.object({
     tone: z.string(),
     subtitle: z.boolean(),

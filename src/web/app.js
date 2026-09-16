@@ -606,6 +606,9 @@ function settingsPage(id) {
             '로그인·본인인증·CAPTCHA·약관 동의는 사용자에게 맡긴다'].map((r) => h('li', null, r))),
           h('p', { class: 'muted small' }, '전체 내용: prompts/fill-basic-info.md')),
         card('추가 규칙', chipEditor('apply.extra_rules', { placeholder: '예: 희망 연봉은 "회사 내규에 따름"을 고른다', emptyText: '(없음)' })),
+        card('로그인하기 전에',
+          toggle('지원 페이지와 회사 정보를 먼저 정리하고 지원 직무를 고르기', 'apply.pre_research'),
+          h('p', { class: 'muted small' }, '지원 페이지 글과 웹 검색으로 모집 직무·전형 절차·회사 소개를 정리하고, 내 희망 직무에 맞는 지원 직무를 골라 Notion 의 절차 / 회사·조직 소개 / 지원 직무에 먼저 넣습니다. 그 다음에 로그인을 부탁합니다. 이 조사는 자기소개서를 쓸 때 다시 씁니다.')),
         card('다 쓰고 나서',
           toggle('임시저장 버튼 누르기 (최종 제출은 절대 누르지 않음)', 'apply.save_draft'),
           h('p', { class: 'muted small' }, '임시저장 버튼 문구 (앞에 있는 것부터 찾습니다. 제출 차단 가드도 그대로 적용됩니다)'),
@@ -1345,21 +1348,28 @@ function browserPage() {
         : h('span', null, d.bundleId ? `기본 브라우저(${d.bundleId})는 원격 조종을 지원하지 않습니다. Aside 나 Chrome 을 고르세요.` : '기본 브라우저를 알 수 없습니다.'),
     );
     const sel = h('select', null, d.profiles.map((p) => h('option', { value: p.dir }, `${p.name} (${p.dir})`)));
+    const cookies = h('input', { type: 'checkbox', checked: true });
+    const done = d.lastImport
+      ? h('div', { class: 'notice ok', style: 'margin-top:8px' }, `가져온 적 있음: ${new Date(d.lastImport.at).toLocaleString('ko-KR')} · "${d.lastImport.profile}" 프로필 · ${d.lastImport.cookies ? '비밀번호 + 로그인 상태' : '비밀번호만'}`)
+      : h('div', { class: 'notice', style: 'margin-top:8px' }, '아직 가져온 적이 없습니다. 지금 가져오면 지원서를 쓸 때 로그인 칸이 자동 완성됩니다.');
     pwBox.replaceChildren(
       d.profiles.length
         ? h('div', null,
           h('div', { class: 'row' }, h('span', { class: 'small' }, '가져올 프로필'), sel,
+            h('label', { class: 'small', style: 'display:flex;align-items:center;gap:6px' }, cookies, '로그인 상태(쿠키)도'),
             h('button', { class: 'btn', type: 'button', onclick: async (e) => {
-              if (!confirm(`평소 쓰는 ${name[d.current]}의 "${sel.selectedOptions[0]?.textContent}" 프로필에 저장된 비밀번호를 자동화 프로필로 복사합니다.\n\n· 자동화 브라우저 창이 열려 있으면 닫습니다.\n· 비밀번호는 암호화된 채로 복사되고, 이 도구는 내용을 보지 않습니다.\n· 자동화 프로필에 원래 있던 비밀번호 파일은 .bak 으로 남깁니다.\n\n계속할까요?`)) return;
+              const what = cookies.checked ? '저장된 비밀번호와 로그인 상태(쿠키)를' : '저장된 비밀번호를';
+              if (!confirm(`평소 쓰는 ${name[d.current]}의 "${sel.selectedOptions[0]?.textContent}" 프로필에 ${what} 자동화 프로필로 복사합니다.\n\n· 자동화 브라우저 창이 열려 있으면 닫습니다.\n· 암호화된 채로 복사되고, 이 도구는 내용을 보지 않습니다.\n· 자동화 프로필에 원래 있던 파일은 .bak 으로 남깁니다.\n· 평소 프로필은 그대로 있습니다 (복사만 합니다).\n\n계속할까요?`)) return;
               e.target.disabled = true;
               try {
-                const r = await run(() => api('POST', '/api/browser/import-passwords', { profile: sel.value }), '비밀번호를 가져왔습니다');
-                pwBox.append(h('div', { class: 'notice ok', style: 'margin-top:8px' }, `복사함: ${r.copied.join(', ')}${r.backups.length ? ` · 예전 파일: ${r.backups.join(', ')}` : ''}. 이제 "자동화 브라우저 열기"로 창을 열면 로그인 칸에 자동 완성이 됩니다.`));
+                const r = await run(() => api('POST', '/api/browser/import-passwords', { profile: sel.value, cookies: cookies.checked }), '가져왔습니다');
+                done.replaceWith(h('div', { class: 'notice ok', style: 'margin-top:8px' }, `복사함: ${r.copied.join(', ')}${r.backups.length ? ` · 예전 파일: ${r.backups.join(', ')}` : ''}. 이제 "자동화 브라우저 열기"로 창을 열면 로그인 칸이 자동 완성됩니다${cookies.checked ? ' (이미 로그인된 사이트는 바로 들어가집니다)' : ''}.`));
               } finally {
                 e.target.disabled = false;
               }
-            } }, '비밀번호 가져오기')),
-          h('p', { class: 'muted small' }, '브라우저가 처음 이 비밀번호를 쓸 때 macOS 가 "키체인 접근" 허용을 물을 수 있습니다. 평소 프로필에서 비밀번호를 바꾸면 여기서 다시 가져오면 됩니다.'))
+            } }, '가져오기')),
+          done,
+          h('p', { class: 'muted small' }, '브라우저가 처음 이 비밀번호를 쓸 때 macOS 가 "키체인 접근" 허용을 물을 수 있습니다. 평소 프로필에서 비밀번호를 바꾸거나 새로 로그인하면 여기서 다시 가져오면 됩니다.'))
         : h('p', { class: 'muted small' }, '평소 쓰는 프로필을 찾지 못했습니다.'),
     );
   }).catch((e) => defBox.replaceChildren(h('span', { style: 'color:var(--danger)' }, e.message)));
@@ -1368,8 +1378,8 @@ function browserPage() {
       ['aside', 'Aside (원격 조종)'],
       ['chrome', 'Chrome (원격 조종)'],
     ]))),
-    card('평소 쓰는 프로필의 비밀번호 쓰기',
-      h('p', { class: 'muted small', style: 'margin-top:0' }, 'Aside 와 Chrome 은 보안 정책상 평소 쓰는 기본 프로필은 원격 조종을 켤 수 없습니다 (쿠키를 훔치는 악성 프로그램을 막기 위한 브라우저 정책). 그래서 자동화는 전용 프로필에서 하고, 대신 기본 프로필에 저장된 비밀번호를 자동화 프로필로 가져올 수 있습니다. 브라우저 계정 동기화를 쓴다면 자동화 브라우저 창에서 같은 계정으로 로그인해도 됩니다.'),
+    card('평소 쓰는 프로필의 비밀번호·로그인 상태 쓰기',
+      h('p', { class: 'muted small', style: 'margin-top:0' }, 'Aside 와 Chrome 은 보안 정책상 평소 쓰는 기본 프로필은 원격 조종을 켤 수 없습니다 (쿠키를 훔치는 악성 프로그램을 막기 위한 브라우저 정책). 그래서 자동화는 전용 프로필에서 하고, 대신 기본 프로필에 저장된 비밀번호와 로그인 상태(쿠키)를 자동화 프로필로 가져올 수 있습니다. 비밀번호가 있으면 로그인 칸이 자동 완성되고, 로그인 상태까지 가져오면 이미 로그인된 사이트는 로그인을 건너뜁니다. 평소 프로필은 그대로 두고 복사만 합니다.'),
       pwBox),
     s.browser.driver !== 'handoff'
       ? card('앱 위치',

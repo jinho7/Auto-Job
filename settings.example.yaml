@@ -139,6 +139,7 @@ apply:
   extra_rules: []              # 인적사항 입력 AI 에게 줄 추가 규칙 (기본 규칙: prompts/fill-basic-info.md)
   model: ""                    # 비우면 AI 연결의 기본 모델
   effort: ""                   # 추론 성능 (비우면 AI 연결의 기본)
+  pre_research: true           # 로그인 전에 지원 페이지·회사 정보를 정리하고 지원 직무를 골라 Notion(절차, 회사 소개, 지원 직무)에 먼저 넣음
   max_parallel: 4              # 설정 화면에서 여러 지원서를 맡길 때 동시에 진행할 개수 (1~8)
   save_draft: true             # 다 쓰고 나서 임시저장 버튼을 누른다 (최종 제출은 절대 누르지 않음)
   save_buttons:                # 임시저장 버튼 문구 (앞에 있는 것부터 찾음)

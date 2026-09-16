@@ -28,7 +28,7 @@ export function applyJobs(): ApplyJobManager {
   });
   return jobManager;
 }
-import { closeAutomationBrowser, defaultDataDir, detectDefaultBrowser, importPasswords, listProfiles } from '../browser/default-profile';
+import { closeAutomationBrowser, defaultDataDir, detectDefaultBrowser, importPasswords, lastImport, listProfiles } from '../browser/default-profile';
 import { addConnection, describeConnections, moveConnection, openLoginTerminal, removeConnection, updateConnection } from '../llm/connections';
 import { clearConnection, connectionsOf, type Connection } from '../llm/pool';
 import { applyImport, importProfileText } from '../profile/import';
@@ -160,13 +160,13 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
     const s = loadSettings();
     const driver = (s.browser.driver === 'chrome' ? 'chrome' : 'aside') as 'aside' | 'chrome';
     const dir = defaultDataDir(driver);
-    return { ...def, current: driver, profiles: dir ? listProfiles(dir) : [], dataDir: dir };
+    return { ...def, current: driver, profiles: dir ? listProfiles(dir) : [], dataDir: dir, lastImport: lastImport(s, driver) };
   },
   'POST /api/browser/import-passwords': async (b) => {
     const settings = loadSettings();
     const driver = (settings.browser.driver === 'chrome' ? 'chrome' : 'aside') as 'aside' | 'chrome';
     const closed = await closeAutomationBrowser(settings.browser[driver].cdp_port);
-    const r = await importPasswords({ settings, driver, profile: str(b, 'profile') });
+    const r = await importPasswords({ settings, driver, profile: str(b, 'profile'), cookies: !!b.cookies });
     return { ...r, closedAutomation: closed };
   },
 

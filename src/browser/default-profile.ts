@@ -3,7 +3,7 @@
 // 그래서 자동화는 전용 프로필에서 하고, 원하면 기본 프로필의 저장된 비밀번호만 자동화 프로필로 복사해 온다.
 // 비밀번호는 암호화된 채로 복사되고(이 도구는 풀어 보지 않는다), 같은 브라우저 앱이 같은 키로 풀어서 자동 완성에 쓴다.
 import { execFile } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Settings } from '../config';
@@ -50,6 +50,23 @@ export function listProfiles(dataDir: string): { dir: string; name: string }[] {
 /** 저장된 비밀번호 파일 (기기에 저장 / 계정에 저장) */
 export const PASSWORD_FILES = ['Login Data', 'Login Data For Account'];
 
+/** 로그인 상태(쿠키) 파일. 요즘 크로미움은 Network/Cookies, 예전에는 프로필 바로 아래 Cookies */
+export const COOKIE_FILES = [path.join('Network', 'Cookies'), 'Cookies'];
+
+/** 가져온 기록을 남기는 파일 (다음에 "아직 안 가져왔어요" 라고 알려 주려고) */
+const MARK = '.autojob-import.json';
+
+export type ImportMark = { at: string; profile: string; files: string[]; cookies: boolean };
+
+/** 이 자동화 프로필로 마지막에 가져온 기록 */
+export function lastImport(settings: Settings, driver: Driver): ImportMark | null {
+  try {
+    return JSON.parse(readFileSync(path.join(settings.browser[driver].profile_dir, 'Default', MARK), 'utf8')) as ImportMark;
+  } catch {
+    return null;
+  }
+}
+
 /** SQLite 파일을 안전하게 복사 (브라우저가 쓰는 중이어도 일관된 사본). sqlite3 가 없으면 그냥 복사 */
 function copyDb(src: string, dst: string): Promise<void> {
   return new Promise((resolve) => {
@@ -60,8 +77,11 @@ function copyDb(src: string, dst: string): Promise<void> {
   });
 }
 
-/** 기본 프로필의 저장된 비밀번호를 자동화 프로필로 복사한다. 자동화 브라우저는 꺼져 있어야 한다. 기존 파일은 .bak 으로 남긴다 */
-export async function importPasswords(o: { settings: Settings; driver: Driver; profile: string; dataDir?: string; now?: Date }): Promise<{ copied: string[]; backups: string[] }> {
+/**
+ * 기본 프로필의 저장된 비밀번호(원하면 로그인 상태인 쿠키까지)를 자동화 프로필로 복사한다.
+ * 자동화 브라우저는 꺼져 있어야 한다. 기존 파일은 .bak 으로 남긴다.
+ */
+export async function importPasswords(o: { settings: Settings; driver: Driver; profile: string; cookies?: boolean; dataDir?: string; now?: Date }): Promise<{ copied: string[]; backups: string[] }> {
   const dataDir = o.dataDir ?? defaultDataDir(o.driver);
   if (!dataDir) throw new Error('이 운영체제에서는 기본 프로필 위치를 알 수 없습니다');
   if (!/^[\w .-]+$/.test(o.profile)) throw new Error('프로필 이름이 올바르지 않습니다');
@@ -72,10 +92,11 @@ export async function importPasswords(o: { settings: Settings; driver: Driver; p
   const stamp = (o.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
   const copied: string[] = [];
   const backups: string[] = [];
-  for (const f of PASSWORD_FILES) {
+  for (const f of [...PASSWORD_FILES, ...(o.cookies ? COOKIE_FILES : [])]) {
     const src = path.join(srcDir, f);
     if (!existsSync(src)) continue;
     const dst = path.join(dstDir, f);
+    mkdirSync(path.dirname(dst), { recursive: true });
     if (existsSync(dst)) {
       renameSync(dst, `${dst}.bak-${stamp}`);
       backups.push(`${f}.bak-${stamp}`);
@@ -85,6 +106,8 @@ export async function importPasswords(o: { settings: Settings; driver: Driver; p
     copied.push(f);
   }
   if (!copied.length) throw new Error(`${srcDir} 에 저장된 비밀번호 파일이 없습니다`);
+  const mark: ImportMark = { at: (o.now ?? new Date()).toISOString(), profile: o.profile, files: copied, cookies: !!o.cookies };
+  writeFileSync(path.join(dstDir, MARK), JSON.stringify(mark, null, 2));
   return { copied, backups };
 }
 
