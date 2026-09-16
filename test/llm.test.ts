@@ -240,3 +240,16 @@ test('한도 신호: 오류 없이 기다리려 해도 바로 잡아내고, 아�
   assert.match(stalled.text, /아무 반응이 없어/);
   assert.equal(classifyFailure(stalled.text), 'unavailable'); // → 다음 연결로
 });
+
+test('연결 확인: 답이 없으면 정해진 시간에 그만두고 무엇을 해 보라고 알려 준다', async () => {
+  const s = base;
+  const codex = { id: 'c2', type: 'codex-cli', label: '', model: '', account_dir: '', effort: '', enabled: true } as Settings['llm']['connections'][number];
+  // 멈춰 있는 AI: 중지 신호를 받을 때까지 답하지 않는다
+  const stuck = (o: { signal?: AbortSignal }) =>
+    new Promise<never>((_, reject) => o.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+  const r = await testAi(s, stuck as never, codex, 300);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /0초 안에 답하지 않아 그만두었습니다/);
+  assert.match(r.message, /codex exec/); // 직접 해 볼 명령을 알려 준다
+  assert.ok(r.ms >= 250 && r.ms < 5000, `${r.ms}ms`);
+});

@@ -836,7 +836,10 @@ function llmPage() {
         h('div', { class: 'row', style: 'gap:6px;margin-top:8px' },
           h('button', { class: 'btn', type: 'button', onclick: async (e) => {
             e.target.disabled = true;
-            result.textContent = '확인 중… (길면 30초)';
+            // 몇 초 걸리는지 보여 준다 (멈춘 것처럼 보이지 않게). 2분이 지나면 서버가 그만두고 이유를 알려 준다
+            const t0 = Date.now();
+            const tick = setInterval(() => (result.textContent = `확인 중… ${Math.round((Date.now() - t0) / 1000)}초 (처음엔 1분 넘게 걸리기도 합니다)`), 1000);
+            result.textContent = '확인 중… 0초';
             try {
               const r = await api('POST', '/api/llm/connections/test', { id: c.id });
               result.textContent = `${r.ok ? '✅' : '❌'} ${r.message} (${(r.ms / 1000).toFixed(1)}초)`;
@@ -844,6 +847,7 @@ function llmPage() {
             } catch (err) {
               result.textContent = `❌ ${err.message}`;
             } finally {
+              clearInterval(tick);
               e.target.disabled = false;
             }
           } }, '연결 확인'),

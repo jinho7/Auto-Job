@@ -116,21 +116,36 @@ export function agentFor(settings: Settings, d: PoolDeps = {}): RunAgent {
   };
 }
 
+/** 연결 확인은 오래 붙잡고 있지 않는다 (CLI 가 로그인·승인 같은 것을 기다리며 멈춰 있을 수 있어서) */
+export const TEST_TIMEOUT_MS = 120_000;
+
 /** 연결 확인: 도구 없이 짧은 답을 받아 본다 (로그인, API 키, 모델 이름 확인). 연결을 고르지 않으면 돌려쓰기 전체로 */
-export async function testAi(settings: Settings, runAgent?: RunAgent, conn?: Connection): Promise<{ ok: boolean; message: string; ms: number }> {
+export async function testAi(settings: Settings, runAgent?: RunAgent, conn?: Connection, timeoutMs = TEST_TIMEOUT_MS): Promise<{ ok: boolean; message: string; ms: number }> {
   const t0 = Date.now();
   const dir = mkdtempSync(path.join(tmpdir(), 'autojob-ai-'));
   const run = runAgent ?? (conn ? (o: AgentRun) => runOnConnection(settings, conn, o) : agentFor(settings));
   const target = conn ?? connectionsOf(settings)[0];
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await run({ prompt: '연결 확인입니다. "연결됨" 이라고만 답하세요.', systemAppend: '짧게 답합니다.', tools: [], cwd: dir });
+    const r = await run({ prompt: '연결 확인입니다. "연결됨" 이라고만 답하세요.', systemAppend: '짧게 답합니다.', tools: [], cwd: dir, signal: ctl.signal, stallMs: timeoutMs });
     const ms = Date.now() - t0;
     if (r.isError) return { ok: false, message: r.text.slice(0, 300), ms };
     const m = modelForConnection(settings, target);
     return { ok: true, message: `${r.connection ?? connectionLabel(target)}${m ? ` (${m})` : ''} 응답: ${r.text.trim().slice(0, 60)}`, ms };
   } catch (e) {
-    return { ok: false, message: (e as Error).message.slice(0, 300), ms: Date.now() - t0 };
+    const ms = Date.now() - t0;
+    if (ctl.signal.aborted) {
+      const how = target.type === 'codex-cli' ? 'codex exec "안녕"' : target.type === 'claude-cli' ? 'claude -p "안녕"' : '';
+      return {
+        ok: false,
+        message: `${Math.round(timeoutMs / 1000)}초 안에 답하지 않아 그만두었습니다. ${how ? `터미널에서 \`${how}\` 를 직접 실행해 로그인이나 승인을 기다리고 있는지 확인해 주세요.` : '키와 인터넷 연결을 확인해 주세요.'}`,
+        ms,
+      };
+    }
+    return { ok: false, message: (e as Error).message.slice(0, 300), ms };
   } finally {
+    clearTimeout(timer);
     rmSync(dir, { recursive: true, force: true });
   }
 }
