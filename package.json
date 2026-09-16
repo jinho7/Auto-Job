@@ -1,12 +1,18 @@
 {
   "name": "auto-job",
   "version": "1.0.0",
-  "private": true,
-  "description": "채용 공고 수집 → Notion 정리 → 지원서 작성(임시저장)까지 AI로 자동화하는 개인용 취업 도구",
+  "description": "채용 공고 수집 → Notion 정리 → 지원서 작성(임시저장)까지 AI로 자동화하는 취업 도구 (제출은 사람이)",
+  "keywords": ["job-application", "notion", "playwright", "claude", "automation", "korea", "취업", "자기소개서"],
+  "license": "MIT",
+  "author": "jinho7",
+  "homepage": "https://github.com/jinho7/Auto-Job#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/jinho7/Auto-Job.git" },
+  "bugs": { "url": "https://github.com/jinho7/Auto-Job/issues" },
   "type": "module",
   "bin": {
     "autojob": "bin/autojob"
   },
+  "files": ["bin", "src", "prompts", "profile/schema.yaml", "settings.example.yaml", "README.md", "PLAN.md", "LICENSE"],
   "engines": {
     "node": ">=22"
   },
@@ -15,7 +21,6 @@
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
-  "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
     "@inquirer/prompts": "^8.7.2",

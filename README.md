@@ -3,6 +3,10 @@
 채용 공고 수집 → Notion 정리 → 지원서 작성(인적사항 + 자기소개서) → **임시저장**까지 AI가 처리하는 취업 자동화 도구.
 최종 제출은 항상 사람이 합니다. 설계와 로드맵은 [PLAN.md](PLAN.md)에 있습니다.
 
+> **English:** Auto-Job collects Korean job postings, files them in Notion, and fills in application forms
+> (personal details + cover-letter answers) with an AI agent, stopping at **save-as-draft** — it never submits.
+> Everything runs on your own machine with your own AI account; docs are in Korean. MIT licensed.
+
 > 현재 단계: **v1 기능 완료** — 공고 수집 → Notion 등록 → 지원서 작성(인적사항, 자기소개서) → 임시저장 → Notion 정리.
 > 실제 채용 사이트마다 화면이 달라, 처음 몇 곳은 결과를 꼭 검토해 주세요.
 > 내 정보와 설정은 모두 내 컴퓨터에만 저장되고, 다른 사람도 자기 정보로 그대로 쓸 수 있게 만들었습니다.
@@ -254,8 +258,15 @@ autojob profile remove extras.certificates.0
 Node.js, 설정 파일, 내 정보(필수 항목), 검색 조건, Notion, 브라우저, AI 연결을 점검하고 다음 할 일을 알려 줍니다. `--ai` 를 붙이면 AI 에게 짧은 질문을 보내 실제로 답하는지도 봅니다.
 
 ## 개인 데이터
-`settings.yaml`, `profile/me/`, `data/`, `.env`는 git에 올라가지 않습니다. 리포트와 화면 캡처(`data/runs/`)에도 개인정보가 들어가므로 공유하지 마세요.
-환경 변수 `AUTOJOB_HOME`을 지정하면 이 파일들을 다른 폴더에 둘 수 있습니다(여러 프로필 관리).
+내 정보와 설정은 **내 컴퓨터에만** 저장됩니다. 서버로 보내는 곳은 없고, AI 연결과 Notion 처럼 직접 연결한 곳에만 요청이 나갑니다.
+
+| 어디에 저장되나 | 언제 |
+|---|---|
+| 내려받은 저장소 폴더 | 이 저장소를 `git clone` 해서 쓰는 경우 (`.git` 이 있거나 이미 `settings.yaml` 을 만든 경우) |
+| `~/.autojob/` | 그 밖의 설치 (예: `npm i -g`) — 설치 폴더에 개인 데이터를 쓰지 않습니다 |
+| `AUTOJOB_HOME` 이 가리키는 폴더 | 환경 변수를 지정한 경우 (여러 벌로 쓰거나 테스트할 때) |
+
+`settings.yaml`, `profile/me/`, `data/`, `.env` 는 git 에 올라가지 않습니다. 리포트와 화면 캡처(`data/runs/`)에도 개인정보가 들어가므로 공유하지 마세요.
 
 ## 만든 방식
 - 참고: [MadsLorentzen/ai-job-search](https://github.com/MadsLorentzen/ai-job-search) (MIT) 의 구성을 참고해 한국 채용 환경에 맞게 새로 만들었습니다.
@@ -267,3 +278,19 @@ Node.js, 설정 파일, 내 정보(필수 항목), 검색 조건, Notion, 브라
 npm test            # 단위 테스트
 npm run typecheck
 ```
+
+- 소스는 하는 일별로 나뉘어 있습니다: `src/collect`(공고 수집), `src/notion`(Notion 읽기·쓰기), `src/browser`(브라우저 조종·제출 차단),
+  `src/apply`(지원서 흐름), `src/essay`(자기소개서), `src/llm`(AI 연결·돌려쓰기), `src/profile`(내 정보), `src/server`+`src/web`(설정 화면).
+- AI 에게 주는 지시문은 코드가 아니라 [`prompts/`](prompts) 의 마크다운 파일입니다. 자기 스타일에 맞게 고쳐 쓰세요.
+- 내 정보 항목은 [`profile/schema.yaml`](profile/schema.yaml) 에 정의되어 있습니다. 항목을 더하거나 빼도 화면과 검사에 자동으로 반영됩니다.
+- 새 채용 사이트 수집기는 `src/collect/` 에 파일 하나를 더하고 목록에 등록하면 됩니다.
+
+## 기여
+이슈와 PR 환영합니다. 고칠 때 지켜 주세요.
+
+1. `npm test` 와 `npm run typecheck` 가 통과해야 합니다.
+2. **개인 데이터를 커밋하지 마세요** (`settings.yaml`, `profile/me/`, `data/`, `.env`). 예시 값은 `홍길동`, `010-1234-5678` 처럼 가짜로 씁니다.
+3. 제출 차단(`src/browser/guard.ts`)은 이 도구의 핵심 안전장치입니다. 약하게 만드는 변경은 받지 않습니다.
+
+## 라이선스
+[MIT](LICENSE). 쓰고, 고치고, 다시 배포해도 됩니다. 다만 **지원서 제출은 사람이 확인하고 직접** 하세요.

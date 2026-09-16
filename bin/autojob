@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
-# autojob 실행 진입점. `npm link` 후 어디서든 `autojob ...`으로 실행할 수 있다.
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/cli.ts" "$@"
+# autojob 실행 진입점. `npm link` 또는 `npm i -g` 뒤에는 어디서든 `autojob ...` 으로 실행한다.
+# macOS 의 readlink 는 -f 를 못 쓰는 경우가 있어, 심볼릭 링크를 직접 따라간다.
+set -e
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [ "${SOURCE#/}" = "$SOURCE" ] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+if [ -x "$ROOT/node_modules/.bin/tsx" ]; then
+  exec "$ROOT/node_modules/.bin/tsx" "$ROOT/src/cli.ts" "$@"
+fi
+if command -v tsx >/dev/null 2>&1; then
+  exec tsx "$ROOT/src/cli.ts" "$@"
+fi
+echo "tsx 를 찾지 못했습니다. 저장소 폴더에서 'npm install' 을 먼저 해 주세요: $ROOT" >&2
+exit 1
