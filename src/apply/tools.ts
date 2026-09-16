@@ -50,19 +50,21 @@ export class ApplyTools {
     private readonly filesDir: string,
     /** 지원서 탭과, 거기서 열린 팝업들 (열린 순서) */
     private readonly owned: Set<Page>,
+    /** 뒤에서 도는 지원서인가 (그렇다면 창을 앞으로 끌어오지 않는다) */
+    private readonly background = false,
   ) {
     this.active = main;
   }
 
   /** 자동화 브라우저에 붙고, 지정한 탭(targetId)을 찾아 그 탭(과 팝업)에만 제출 차단을 켠다 */
-  static async connect(settings: Settings, cdpPort: number, targetId: string, filesDir: string): Promise<ApplyTools> {
+  static async connect(settings: Settings, cdpPort: number, targetId: string, filesDir: string, opts: { background?: boolean } = {}): Promise<ApplyTools> {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
     const context = browser.contexts()[0];
     let main: Page | undefined;
     for (const p of context.pages()) if ((await targetIdOf(context, p).catch(() => '')) === targetId) main = p;
     if (!main) throw new Error('지원서 탭을 찾지 못했습니다. 탭을 닫았다면 다시 시작해 주세요.');
     const guard = await installGuard(main, settings.browser.guard, { armed: true });
-    const tools = new ApplyTools(browser, context, main, settings, filesDir, guard.pages);
+    const tools = new ApplyTools(browser, context, main, settings, filesDir, guard.pages, !!opts.background);
     // 내 탭의 대화상자만 처리 (컨텍스트 리스너가 있으면 다른 탭 대화상자는 자동으로 닫히지 않는다)
     context.on('dialog', (d) => {
       if (guard.owns(d.page())) void tools.onDialog(d);
@@ -137,7 +139,9 @@ export class ApplyTools {
   }
 
   async screenshot(): Promise<Buffer> {
-    await this.page().bringToFront().catch(() => {});
+    // 뒤에서 도는 지원서는 창을 앞으로 끌어오지 않는다 (사람 일을 방해하지 않게).
+    // 창을 계속 그리도록 띄웠기 때문에 가려져 있어도 화면은 찍힌다.
+    if (!this.background) await this.page().bringToFront().catch(() => {});
     return this.page().screenshot({ type: 'jpeg', quality: 60, timeout: 15_000, animations: 'disabled' });
   }
 

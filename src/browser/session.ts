@@ -19,6 +19,8 @@ export class BrowserSession {
     private readonly tabGuard: Awaited<ReturnType<typeof installGuard>>,
     /** 창 제목 앞에 붙는 표시 (창이 여러 개일 때 "이 창"을 집어내려고) */
     readonly mark: string = '',
+    /** 뒤에서 도는 지원서인가 (그렇다면 스스로 창을 앞으로 올리지 않는다) */
+    private readonly background = false,
   ) {}
 
   static async open(settings: Settings, opts: { newWindow?: boolean; background?: boolean; url?: string } = {}): Promise<BrowserSession> {
@@ -33,7 +35,7 @@ export class BrowserSession {
     const mark = n ? `[지원 ${n}]` : '';
     if (mark) await markTitle(page, mark);
     const tabGuard = await installGuard(page, guard);
-    const session = new BrowserSession(browser, context, guard, page, tabGuard, mark);
+    const session = new BrowserSession(browser, context, guard, page, tabGuard, mark, !!opts.background);
     // 컨텍스트에 리스너가 있으면 Playwright 가 다른 탭의 대화상자를 자동으로 닫지 않는다. 내 탭 것만 처리한다.
     context.on('dialog', (d) => {
       if (tabGuard.owns(d.page())) void session.onDialog(d);
@@ -79,9 +81,9 @@ export class BrowserSession {
     return 'filled';
   }
 
-  /** 뒤에 가려진 탭은 화면을 그리지 않아 캡처가 멈출 수 있어, 앞으로 가져온 뒤 찍는다. 전체 페이지가 안 되면 보이는 부분만. */
+  /** 캡처. 뒤에서 도는 지원서는 창을 앞으로 끌어오지 않는다 (창을 계속 그리도록 띄웠으므로 가려져도 찍힌다) */
   async screenshot(file: string): Promise<void> {
-    await this.page.bringToFront().catch(() => {});
+    if (!this.background) await this.page.bringToFront().catch(() => {});
     await this.page
       .screenshot({ path: file, fullPage: true, timeout: 15_000, animations: 'disabled' })
       .catch(() => this.page.screenshot({ path: file, timeout: 15_000, animations: 'disabled' }));

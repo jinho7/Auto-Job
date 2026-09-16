@@ -18,7 +18,9 @@ export async function main(): Promise<void> {
   const driver = settings.browser.driver === 'handoff' ? 'aside' : settings.browser.driver;
   // Claude 는 MCP 서버 연결을 기다리지 않고 시작하므로, 시작은 바로 응답하고 브라우저 연결은 처음 도구를 부를 때 한다.
   // (연결을 미리 걸어 두되, 도구 호출에서 끝나기를 기다린다)
-  const toolsReady = ApplyTools.connect(settings, settings.browser[driver].cdp_port, process.env.AUTOJOB_TARGET_ID ?? '', path.join(paths.profileMe, 'files'));
+  const toolsReady = ApplyTools.connect(settings, settings.browser[driver].cdp_port, process.env.AUTOJOB_TARGET_ID ?? '', path.join(paths.profileMe, 'files'), {
+    background: process.env.AUTOJOB_BACKGROUND === '1',
+  });
   toolsReady.catch(() => {});
   let toolsCache: ApplyTools | null = null;
   const tools = new Proxy({} as ApplyTools, {

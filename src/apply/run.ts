@@ -313,7 +313,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
           server: 'autojob',
           command: path.join(ROOT, 'node_modules', '.bin', 'tsx'),
           args: [path.join(ROOT, 'src', 'mcp', 'browser-server.ts')],
-          env: { AUTOJOB_HOME: DATA_HOME, AUTOJOB_TARGET_ID: targetId, ...bridgeEnv },
+          env: { AUTOJOB_HOME: DATA_HOME, AUTOJOB_TARGET_ID: targetId, AUTOJOB_BACKGROUND: o.window?.background ? '1' : '0', ...bridgeEnv },
         },
         model: modelFor(settings, settings.apply.model),
         effort: settings.apply.effort || undefined,
@@ -354,7 +354,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
         writeFileSync(essay.file, formatEssays(essay.result));
 
         log('   ⌨️  답변을 입력합니다');
-        const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir);
+        const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir, { background: o.window?.background });
         try {
           for (const q of essay.questions) {
             const text = essay.result.answers.find((a) => a.id === q.id)?.text.trim() ?? '';
@@ -381,7 +381,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
     let save: ApplyReport['save'];
     if (settings.apply.save_draft && !agent.isError) {
       log('⑤ 임시저장');
-      const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir);
+      const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir, { background: o.window?.background });
       try {
         save = await tools.saveDraft(settings.apply.save_buttons);
       } catch (e) {
@@ -392,8 +392,9 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       log(`   ${save.ok ? '💾' : '⚠️ '} ${save.message}${save.dialogs.length ? ` / 알림: ${save.dialogs.join(' / ')}` : ''}`);
     }
 
-    // 결과 화면을 앞으로
-    await session.show();
+    // 결과 화면을 앞으로 (뒤에서 도는 지원서는 보던 창을 가로채지 않고, 대화방의 "창 보기"로 열어 본다)
+    if (o.window?.background) log('   🪟 다 됐습니다 — 대화방의 "창 보기"로 지원서 창을 열어 검토해 주세요');
+    else await session.show();
     let screenshot: string | undefined = path.join(dir, 'screenshot.png');
     await session.screenshot(screenshot).catch(() => (screenshot = undefined));
 
