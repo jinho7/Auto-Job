@@ -30,7 +30,7 @@ export function applyJobs(): ApplyJobManager {
 }
 import { closeAutomationBrowser, defaultDataDir, detectDefaultBrowser, importPasswords, lastImport, listProfiles } from '../browser/default-profile';
 import { addConnection, describeConnections, moveConnection, openLoginTerminal, removeConnection, updateConnection } from '../llm/connections';
-import { clearConnection, connectionsOf, type Connection } from '../llm/pool';
+import { clearConnection, connectionsOf, saveConnCheck, type Connection } from '../llm/pool';
 import { applyImport, importProfileText } from '../profile/import';
 import { scanFolder, scanFolders, type SourceFolder } from '../essay/sources';
 
@@ -129,6 +129,7 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
     const c = connectionsOf(settings).find((x) => x.id === str(b, 'id'));
     if (!c) throw new Error('없는 연결입니다');
     const r = await testAi(settings, undefined, c);
+    saveConnCheck(c.id, { at: new Date().toISOString(), ok: r.ok, message: r.message, ms: r.ms });
     if (r.ok) clearConnection(c.id);
     return { ...r, connections: describeConnections(loadSettings()) };
   },

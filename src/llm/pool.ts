@@ -89,3 +89,21 @@ export function restingState(id: string, now = new Date()): ConnState | null {
 }
 
 export const KIND_LABEL: Record<FailureKind, string> = { limit: '사용량 한도', auth: '로그인/키 문제', unavailable: '쓸 수 없음' };
+
+// ─── 마지막 연결 확인 결과 ───
+// "연결 확인"을 누른 결과를 남겨 둔다. 화면을 다시 그려도 사라지지 않게, 다음에 열어도 보이게.
+export type ConnCheck = { at: string; ok: boolean; message: string; ms: number };
+const checkFile = () => path.join(paths.data, 'llm-checks.json');
+
+export function readConnChecks(): Record<string, ConnCheck> {
+  try {
+    return existsSync(checkFile()) ? (JSON.parse(readFileSync(checkFile(), 'utf8')) as Record<string, ConnCheck>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveConnCheck(id: string, c: ConnCheck): void {
+  mkdirSync(path.dirname(checkFile()), { recursive: true });
+  writeFileSync(checkFile(), JSON.stringify({ ...readConnChecks(), [id]: c }, null, 1));
+}

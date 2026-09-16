@@ -491,7 +491,16 @@ function radios(name, path, options) {
 }
 
 // 모델 이름 추천 (직접 적어도 됨)
-const MODEL_SUGGEST = [['claude-opus-5', 'Opus 5 — 똑똑함, 보통 속도'], ['claude-sonnet-5', 'Sonnet 5 — 빠르고 저렴'], ['claude-haiku-4-5', 'Haiku 4.5 — 가장 빠름 (추론 성능 설정 없음)'], ['claude-fable-5-1', 'Fable 5.1 — 가장 똑똑함, 비쌈'], ['gpt-5', 'GPT-5 (Codex, OpenAI)'], ['gpt-5-mini', 'GPT-5 mini (Codex, OpenAI)']];
+const MODEL_SUGGEST = [
+  ['claude-opus-5', 'Opus 5 — 똑똑함, 보통 속도', 'claude'],
+  ['claude-sonnet-5', 'Sonnet 5 — 빠르고 저렴', 'claude'],
+  ['claude-haiku-4-5', 'Haiku 4.5 — 가장 빠름 (추론 성능 설정 없음)', 'claude'],
+  ['claude-fable-5-1', 'Fable 5.1 — 가장 똑똑함, 비쌈', 'claude'],
+  ['gpt-5', 'GPT-5 (Codex, OpenAI)', 'openai'],
+  ['gpt-5-mini', 'GPT-5 mini (Codex, OpenAI)', 'openai'],
+];
+/** 연결 종류에 맞는 모델만 (Claude 연결에 gpt-, Codex 연결에 claude- 를 권하지 않도록) */
+const modelsFor = (type) => MODEL_SUGGEST.filter(([, , family]) => family === (type === 'codex-cli' || type === 'openai-api' ? 'openai' : 'claude'));
 const EFFORT_OPTS = [['', '기본'], ['low', '낮음 — 빠르고 적게 씀'], ['medium', '중간'], ['high', '높음'], ['xhigh', '매우 높음'], ['max', '최대 — 느리고 많이 씀']];
 
 /** 모델(추천 목록 + 직접 입력)과 추론 성능 한 줄. modelPath/effortPath 는 설정 경로 */
@@ -501,7 +510,7 @@ function modelEffortRow(label, modelPath, effortPath, hint) {
     h('label', null, label),
     h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
       h('input', { list: listId, value: sget(modelPath) || '', placeholder: '모델 (비우면 기본)', style: 'flex:1;min-width:150px', onchange: (e) => setSetting(modelPath, e.target.value.trim()) }),
-      h('datalist', { id: listId }, MODEL_SUGGEST.map(([v, t]) => h('option', { value: v }, t))),
+      h('datalist', { id: listId }, MODEL_SUGGEST.map(([v, t, family]) => h('option', { value: v }, `${t} · ${family === 'claude' ? 'Claude 연결용' : 'Codex/OpenAI 연결용'}`))),
       h('select', { title: '추론 성능', onchange: (e) => setSetting(effortPath, e.target.value) }, EFFORT_OPTS.map(([v, t]) => h('option', { value: v, selected: (sget(effortPath) || '') === v ? true : null }, `추론 ${t}`)))),
     hint ? h('div', { class: 'hint' }, hint) : null);
 }
@@ -807,7 +816,13 @@ function llmPage() {
         : !c.installed ? h('span', { class: 'badge bad' }, c.type === 'codex-cli' ? '설치 필요 (npm i -g @openai/codex)' : '설치 필요 (Claude Code)')
         : c.resting ? h('span', { class: 'badge warn' }, `${{ limit: '한도', auth: '로그인 필요', unavailable: '쓸 수 없음' }[c.resting.kind]} — ${new Date(c.resting.until).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}까지 쉼`)
         : c.key && !c.key.set ? h('span', { class: 'badge warn' }, 'API 키 없음')
-        : h('span', { class: 'badge ok' }, i === 0 ? '먼저 씀' : '대기');
+        : h('span', { class: 'badge ok' }, i === 0 ? '먼저 씀' : `${i + 1}순위 (앞 연결이 막히면 씀)`);
+      // 마지막 "연결 확인" 결과 (화면을 다시 그려도, 다음에 열어도 남아 있다)
+      const lc = c.lastCheck;
+      const checked = lc
+        ? h('div', { class: 'small', style: `margin-top:6px;color:var(${lc.ok ? '--ok' : '--danger'})` },
+          `${lc.ok ? '✅ 연결됨' : '❌ 안 됨'} — ${lc.message} · ${new Date(lc.at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 확인 (${(lc.ms / 1000).toFixed(1)}초)`)
+        : h('div', { class: 'small muted', style: 'margin-top:6px' }, '아직 확인하지 않았습니다 — "연결 확인"을 눌러 보세요.');
       return card(null,
         h('div', { class: 'row', style: 'justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap' },
           h('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, h('strong', null, `${i + 1}. ${c.display}`), h('span', { class: 'muted small' }, c.typeLabel), status),
@@ -818,10 +833,12 @@ function llmPage() {
         h('div', { class: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap' },
           h('label', { class: 'small', style: 'display:flex;gap:6px;align-items:center' }, h('input', { type: 'checkbox', checked: c.enabled, onchange: (e) => upd({ enabled: e.target.checked }) }), '사용'),
           h('input', { value: c.label, placeholder: '이름 (예: 내 Claude, 친구 계정)', style: 'flex:1;min-width:140px', onchange: (e) => upd({ label: e.target.value.trim() }, '저장했습니다') }),
-          h('input', { value: c.model, list: 'dl-conn-models', placeholder: c.type === 'anthropic-api' ? '모델 (비우면 claude-opus-5)' : c.type === 'openai-api' ? '모델 (비우면 gpt-5)' : '모델 (비우면 기본)', style: 'flex:1;min-width:140px', onchange: (e) => upd({ model: e.target.value.trim() }, '저장했습니다') }),
+          h('input', { value: c.model, list: `dl-models-${c.id}`, placeholder: c.type === 'anthropic-api' ? '모델 (비우면 claude-opus-5)' : c.type === 'openai-api' ? '모델 (비우면 gpt-5)' : '모델 (비우면 기본)', style: 'flex:1;min-width:140px', onchange: (e) => upd({ model: e.target.value.trim() }, '저장했습니다') }),
+          h('datalist', { id: `dl-models-${c.id}` }, modelsFor(c.type).map(([v, t]) => h('option', { value: v }, t))),
           h('select', { title: '추론 성능', onchange: (e) => upd({ effort: e.target.value }, '저장했습니다') }, EFFORT_OPTS.map(([v, t]) => h('option', { value: v, selected: (c.effort || '') === v ? true : null }, `추론 ${t}`)))),
         c.login ? h('div', { style: 'margin-top:8px' },
-          h('div', { class: 'small muted' }, c.account_dir ? `계정 폴더: ${c.account_dir} (이 연결만의 로그인)` : '이 컴퓨터의 기본 로그인'),
+          h('div', { class: 'small muted' },
+            `${c.account_dir ? `계정 폴더: ${c.account_dir} (이 연결만의 로그인)` : '이 컴퓨터의 기본 로그인'}${lc?.ok ? ' — 이 로그인으로 확인됐습니다. 다른 계정으로 바꿀 때만 다시 로그인하세요.' : ''}`),
           h('div', { class: 'row', style: 'gap:6px;margin-top:4px' },
             h('button', { class: 'btn', type: 'button', onclick: async () => {
               const r = await run(() => api('POST', '/api/llm/connections/login', { id: c.id }));
@@ -852,6 +869,7 @@ function llmPage() {
             }
           } }, '연결 확인'),
           c.resting ? h('button', { class: 'btn', type: 'button', onclick: () => run(() => api('POST', '/api/llm/connections/reset', { id: c.id }), '다시 쓰도록 했습니다').then((r) => draw(r.connections)) }, '쉬는 중 해제') : null),
+        checked,
         result,
       );
     }));
@@ -863,7 +881,7 @@ function llmPage() {
     card('연결 추가',
       h('div', { class: 'row', style: 'gap:6px' }, typeSel, h('button', { class: 'btn primary', type: 'button', onclick: () => run(() => api('POST', '/api/llm/connections/add', { type: typeSel.value }), '추가했습니다 — 로그인하거나 API 키를 넣으세요').then((r) => draw(r.connections)) }, '추가')),
       h('p', { class: 'muted small' }, '같은 Claude Code 를 한 번 더 추가하면 따로 로그인할 계정 폴더가 생깁니다 (다른 계정 돌려쓰기).')),
-    h('datalist', { id: 'dl-conn-models' }, MODEL_SUGGEST.map(([v, t]) => h('option', { value: v }, t))),
+
     card('작업별 AI',
       h('p', { class: 'muted small', style: 'margin-top:0' }, '작업마다 모델과 추론 성능을 따로 정합니다. 비우면 위 연결의 설정 → 아래 기본값 순서로 씁니다. 다른 회사 모델 이름(예: Codex 연결에 claude-…)은 알아서 건너뜁니다. 추론 성능이 높을수록 꼼꼼하지만 느리고 사용량이 많이 듭니다.'),
       modelEffortRow('지원서 입력 (인적사항)', 'apply.model', 'apply.effort'),

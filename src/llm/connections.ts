@@ -6,7 +6,7 @@ import type { Settings } from '../config';
 import { expandHome } from '../paths';
 import { connectionKeyName, getSecret, maskSecret, setSecret } from '../secrets';
 import type { SettingsStore } from '../settings/store';
-import { connectionLabel, connectionsOf, readConnStates, TYPE_LABEL, type Connection, type LlmType } from './pool';
+import { connectionLabel, connectionsOf, readConnChecks, readConnStates, TYPE_LABEL, type Connection, type LlmType } from './pool';
 
 const isCli = (t: LlmType) => t === 'claude-cli' || t === 'codex-cli';
 
@@ -88,6 +88,7 @@ export function commandExists(bin: string): boolean {
 /** 설정 화면에 보여 줄 연결 목록 (쉬는 상태, API 키 여부 포함) */
 export function describeConnections(settings: Settings) {
   const states = readConnStates();
+  const checks = readConnChecks();
   const now = Date.now();
   return connectionsOf(settings).map((c) => {
     const st = states[c.id] && new Date(states[c.id].until).getTime() > now ? states[c.id] : null;
@@ -99,6 +100,7 @@ export function describeConnections(settings: Settings) {
       resting: st,
       key: c.type.endsWith('-api') ? { set: !!key, masked: maskSecret(key), own: !!getSecret(connectionKeyName(c.id)) } : null,
       login: loginCommand(c),
+      lastCheck: checks[c.id] ?? null,
       installed: c.type === 'claude-cli' ? commandExists('claude') : c.type === 'codex-cli' ? commandExists('codex') : true,
     };
   });
