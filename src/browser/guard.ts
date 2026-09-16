@@ -27,7 +27,12 @@ export function checkLabel(label: string, cfg: GuardConfig, armed: boolean): Gua
   return hit ? { blocked: true, keyword: hit } : { blocked: false };
 }
 
-/** 모든 문서와 프레임에 주입하는 1차 가드. window.__autojobArmed가 true면 block_when_armed까지 적용한다. */
+/**
+ * 모든 문서와 프레임에 주입하는 1차 가드.
+ * **사람이 직접 누르는 것은 막지 않는다.** AI 도구가 무언가 하기 직전에 window.__autojobAgentAt 에 시각을 찍는데,
+ * 그 직후(3초 안)에 일어난 클릭·폼 제출만 막는다. 사람은 자기 지원서를 마음대로 눌러야 하고, 제출도 사람이 한다.
+ * window.__autojobArmed 가 true 면 block_when_armed 까지 적용한다.
+ */
 export function pageGuardScript(cfg: GuardConfig): string {
   const norm = (xs: string[]) => JSON.stringify(xs.map(normalizeLabel));
   return `(() => {
@@ -39,7 +44,10 @@ export function pageGuardScript(cfg: GuardConfig): string {
   const CLICKABLE = 'button, a, input[type=submit], input[type=button], input[type=image], [role=button], [onclick]';
   const labelOf = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('alt') || '')
     .replace(/\\s+/g, '').toLowerCase();
+  const AGENT_MS = 3000;
+  const byAgent = () => typeof window.__autojobAgentAt === 'number' && Date.now() - window.__autojobAgentAt < AGENT_MS;
   const forbidden = (el) => {
+    if (!byAgent()) return null; // 사람이 누른 것은 막지 않는다
     const l = labelOf(el);
     if (!l || ALLOW.includes(l)) return null;
     const lists = window.__autojobArmed ? ALWAYS.concat(ARMED) : ALWAYS;
@@ -67,6 +75,14 @@ export function pageGuardScript(cfg: GuardConfig): string {
 }
 
 export const ARM_SCRIPT = 'window.__autojobArmed = true;';
+
+/** AI 도구가 무언가 하기 직전에 찍는 표시 (이 직후의 클릭·제출만 가드가 막는다) */
+export const MARK_AGENT_SCRIPT = 'window.__autojobAgentAt = Date.now();';
+
+/** 이 페이지의 모든 프레임에 "지금부터 AI 가 한다" 표시를 찍는다 */
+export async function markAgentAction(page: Page): Promise<void> {
+  for (const f of page.frames()) await f.evaluate(MARK_AGENT_SCRIPT).catch(() => {});
+}
 
 /**
  * 가드를 이 탭과, 이 탭에서 열린 팝업에만 건다 (같은 브라우저의 다른 탭에는 영향 없음).

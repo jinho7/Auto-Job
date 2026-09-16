@@ -7,6 +7,7 @@ import { BridgeClient, startBridge, type BridgeEvent } from '../src/apply/bridge
 import { renderProfileForAgent } from '../src/apply/profile-doc';
 import { buildPrompt, buildSystemPrompt, formatApplyReport, resolveTarget, type ApplyReport } from '../src/apply/run';
 import { DATA_LOSS } from '../src/apply/tools';
+import { BUNDLE_ID, notifyScript } from '../src/notify';
 import { parseSettings } from '../src/config';
 import { paths } from '../src/paths';
 import { freshProfile, tempDir } from './helpers';
@@ -116,4 +117,16 @@ test('이어서 고치기: 사용자가 적은 부탁이 지시문과 자기소�
   const prompt = buildPrompt({ company: '가사', link: 'https://x/apply' }, '내 정보', [], null, '학력에 부전공 넣어 줘');
   assert.match(prompt, /## 사용자가 지금 부탁한 것 \(이것을 먼저 하세요\)\n학력에 부전공 넣어 줘/);
   assert.match(prompt, /이미 채워 둔 칸은 이 부탁과 관계없으면 그대로 두세요/);
+});
+
+test('알림: 자동화 브라우저 이름으로 보낸다 (눌렀을 때 스크립트 편집기가 열리지 않게)', () => {
+  assert.equal(
+    notifyScript('제목', '내용', 'at.studio.asidebrowser'),
+    'tell application id "at.studio.asidebrowser" to display notification "내용" with title "제목" sound name "Glass"',
+  );
+  assert.match(notifyScript('제목', '내용'), /^display notification "내용"/); // 앱을 모르면 그냥 알림
+  const escaped = notifyScript('따옴표 "있음"', '역슬래시 \\ 있음', 'x');
+  assert.ok(escaped.includes('with title "따옴표 \\"있음\\""'), escaped);
+  assert.ok(escaped.includes('display notification "역슬래시 \\\\ 있음"'), escaped);
+  assert.deepEqual(BUNDLE_ID, { aside: 'at.studio.asidebrowser', chrome: 'com.google.chrome' });
 });

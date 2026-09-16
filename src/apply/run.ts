@@ -15,7 +15,7 @@ import { propText } from '../notion/client';
 import { fillPageSections, setSubmitStatus, type PageContent, type SectionResult } from '../notion/page-fill';
 import { notionClient } from '../notion/setup';
 import { getSecret } from '../secrets';
-import { notify as notifyMac } from '../notify';
+import { notifyBrowser } from '../notify';
 import { DATA_HOME, paths, ROOT, runDir } from '../paths';
 import { checkProfile } from '../profile/check';
 import { loadSchema } from '../profile/schema';
@@ -204,7 +204,7 @@ export function loginHelp(settings: Settings, mark = lastImport): string {
 
 export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   const log = o.log ?? console.log;
-  const notify = o.notify ?? notifyMac;
+  const notify = o.notify ?? ((t: string, m: string) => notifyBrowser(settings, t, m));
   const steps: ApplyStep[] = o.steps?.length ? o.steps : ['basic', 'essay'];
   const settings = loadSettings();
   if (settings.browser.driver === 'handoff') throw new Error('handoff 브라우저 설정에서는 자동 입력을 할 수 없습니다. 설정 → 브라우저에서 Aside 나 Chrome 을 골라 주세요.');

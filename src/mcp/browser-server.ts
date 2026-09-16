@@ -78,7 +78,7 @@ export async function main(): Promise<void> {
     },
     press: {
       description: '입력칸에서 키를 누릅니다 (Enter, Tab, Escape, 방향키, Space). 예: 주소 검색창에서 Enter.',
-      props: { ref, key: { type: 'string', description: 'Enter | Tab | Escape | ArrowDown | ArrowUp | ArrowLeft | ArrowRight | Space' } },
+      props: { ref, key: { type: 'string', description: 'Enter | Tab | Escape | 방향키 | Space | Home | End | PageDown | PageUp' } },
       required: ['ref', 'key'],
       run: (a) => tools.press(str(a, 'ref'), str(a, 'key')).then((m) => report(m, 'press')),
     },
@@ -94,6 +94,7 @@ export async function main(): Promise<void> {
       required: ['url'],
       run: (a) => tools.goto(str(a, 'url')).then((m) => report(m, 'goto')),
     },
+    back: { description: '뒤로 갑니다 (잘못 들어간 화면에서 되돌아올 때). 입력을 시작한 뒤에는 쓸 수 없습니다.', run: () => tools.back().then((m) => report(m, 'back')) },
     pages: { description: '열린 창 목록 (지원서 + 팝업).', run: async () => tools.pages() },
     use_page: {
       description: '다른 창(팝업 등)으로 전환합니다. 팝업이 닫히면 자동으로 지원서 창으로 돌아옵니다.',

@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright-core';
 import type { Settings } from '../config';
-import { checkLabel, installGuard } from '../browser/guard';
+import { checkLabel, installGuard, markAgentAction } from '../browser/guard';
 import { formatControls, snapshotFrames } from '../browser/snapshot';
 
 /** 값을 지우거나 페이지를 떠나게 만드는 버튼 */
@@ -43,6 +43,8 @@ export class ApplyTools {
   private active: Page;
   /** 지원서 입력 단계에 들어갔는가 (그 뒤로는 "지원하기" 계열까지 막는다) */
   private armed = false;
+  /** AI 가 마지막으로 무언가 한 시각 (이 직후에 뜬 대화상자만 AI 가 처리한다) */
+  private actedAt = 0;
 
   private constructor(
     private readonly browser: Browser,
@@ -110,6 +112,12 @@ export class ApplyTools {
     if (fields >= 3) await this.arm(`입력칸이 ${fields}개인 지원서 화면입니다`);
   }
 
+  /** "지금부터 AI 가 한다" 표시. 사람이 누르는 것은 가드가 막지 않는다 */
+  private async acting(): Promise<void> {
+    this.actedAt = Date.now();
+    await markAgentAction(this.page());
+  }
+
   private record(entry: ToolLog): string {
     this.log.push(entry);
     return entry.message;
@@ -117,6 +125,11 @@ export class ApplyTools {
 
   private async onDialog(d: import('playwright-core').Dialog): Promise<void> {
     const msg = d.message();
+    if (Date.now() - this.actedAt > 5000) {
+      // 사람이 누르다 뜬 창이다. 대신 닫지 않고 그대로 둔다 (사람이 읽고 고르도록)
+      this.record({ tool: 'dialog', ok: true, message: `사람이 띄운 창이라 그대로 둡니다: ${msg}` });
+      return;
+    }
     const bad = checkLabel(msg, this.settings.browser.guard, true).blocked || DATA_LOSS.test(msg) || /최종|수정\s*불가|페이지를\s*나가/.test(msg) || d.type() === 'beforeunload';
     this.record({ tool: 'dialog', ok: !bad, message: `${bad ? '거절' : '확인'}: ${msg}` });
     await (bad || d.type() === 'prompt' ? d.dismiss() : d.accept()).catch(() => {});
@@ -225,6 +238,7 @@ export class ApplyTools {
     if (d.value.trim() && d.value.trim() !== value.trim()) {
       return this.record({ tool: 'fill', ref, value, ok: false, message: `이미 "${d.value}" 값이 있어 건드리지 않았습니다 (이미 입력된 값은 수정하지 않음).` });
     }
+    await this.acting();
     const v = toNativeDate(d.type, value);
     if (opts.typeSlowly) {
       await loc.click();
@@ -251,6 +265,7 @@ export class ApplyTools {
     if (!currentIsPlaceholder && cur !== pick.text) {
       return this.record({ tool: 'select', ref, value: option, ok: false, message: `이미 "${cur}" 이(가) 선택되어 있어 건드리지 않았습니다.` });
     }
+    await this.acting();
     await loc.selectOption({ index: pick.i });
     await this.arm('입력을 시작했습니다');
     return this.record({ tool: 'select', ref, value: pick.text, ok: true, message: `선택함: "${pick.text}"` });
@@ -270,6 +285,7 @@ export class ApplyTools {
       if (groupChecked) return this.record({ tool: 'check', ref, ok: false, message: '같은 그룹에서 이미 다른 항목이 선택되어 있어 바꾸지 않았습니다.' });
     }
     // 디자인 때문에 숨겨진 라디오도 있어, 요소 자체의 click 으로 선택한다 (라벨/버튼 문구 검사는 click 과 같다)
+    await this.acting();
     await loc.check({ timeout: 2000 }).catch(() => loc.evaluate((el) => (el as HTMLElement).click()));
     const ok = (await this.describe(loc)).checked;
     if (ok) await this.arm('입력을 시작했습니다');
@@ -293,6 +309,7 @@ export class ApplyTools {
       }
     }
     const before = this.owned.size;
+    await this.acting();
     await loc.click({ timeout: 5000 });
     await this.page().waitForTimeout(700);
     const opened = this.owned.size > before ? ` 새 창이 열렸습니다 → pages / use_page ${this.openPages().length - 1}` : '';
@@ -319,9 +336,21 @@ export class ApplyTools {
     return this.record({ tool: 'goto', value: to.href, ok: true, message: `${to.href} 로 옮겼습니다.` });
   }
 
+  /** 잘못 들어간 페이지에서 되돌아오기. 입력을 시작한 뒤에는 쓴 내용을 잃지 않도록 막는다 */
+  async back(): Promise<string> {
+    if (this.armed) throw new ToolError('이미 지원서를 쓰는 중이라 뒤로 가지 않습니다 (쓴 내용을 잃을 수 있습니다).');
+    await this.acting();
+    await this.page().goBack({ waitUntil: 'domcontentloaded' }).catch(() => null);
+    await this.page().waitForTimeout(500);
+    await this.armIfFormPage();
+    return this.record({ tool: 'back', ok: true, message: `뒤로 왔습니다: ${this.page().url()}` });
+  }
+
   async press(ref: string, key: string): Promise<string> {
-    if (!/^(Enter|Tab|Escape|ArrowDown|ArrowUp|ArrowLeft|ArrowRight|Space)$/.test(key)) throw new ToolError('Enter, Tab, Escape, 방향키, Space 만 누를 수 있습니다.');
+    if (!/^(Enter|Tab|Escape|ArrowDown|ArrowUp|ArrowLeft|ArrowRight|Space|Home|End|PageDown|PageUp)$/.test(key))
+      throw new ToolError('Enter, Tab, Escape, 방향키, Space, Home, End, PageDown, PageUp 만 누를 수 있습니다.');
     const loc = await this.locate(ref);
+    await this.acting();
     await loc.press(key === 'Space' ? ' ' : key);
     await this.page().waitForTimeout(500);
     return this.record({ tool: 'press', ref, value: key, ok: true, message: `${key} 를 눌렀습니다.` });
@@ -331,6 +360,7 @@ export class ApplyTools {
     const file = path.join(this.filesDir, path.basename(fileName));
     if (!existsSync(file)) throw new ToolError(`profile/me/files/${path.basename(fileName)} 파일이 없습니다.`);
     const loc = await this.locate(ref);
+    await this.acting();
     await loc.setInputFiles(file);
     await this.arm('파일을 올렸습니다');
     return this.record({ tool: 'upload', ref, value: path.basename(file), ok: true, message: `올렸습니다: ${path.basename(file)}` });

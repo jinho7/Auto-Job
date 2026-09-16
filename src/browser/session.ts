@@ -3,12 +3,14 @@
 import type { Browser, BrowserContext, Dialog, Locator, Page } from 'playwright-core';
 import type { GuardConfig, Settings } from '../config';
 import { connectCdp } from './cdp';
-import { checkLabel, GuardBlockedError, installGuard, normalizeLabel } from './guard';
+import { checkLabel, GuardBlockedError, installGuard, markAgentAction, normalizeLabel } from './guard';
 
 export type FillResult = 'filled' | 'skipped-prefilled';
 
 export class BrowserSession {
   private armed = false;
+  /** 코드가 마지막으로 무언가 누른 시각 (이 직후에 뜬 대화상자만 대신 처리한다) */
+  private actedAt = 0;
   readonly events: string[] = [];
 
   private constructor(
@@ -69,6 +71,8 @@ export class BrowserSession {
       this.events.push(`차단: ${label.trim()} (${verdict.keyword})`);
       throw new GuardBlockedError(label.trim(), verdict.keyword);
     }
+    this.actedAt = Date.now();
+    await markAgentAction(this.page);
     await loc.click();
   }
 
@@ -140,6 +144,11 @@ export class BrowserSession {
 
   private async handleDialog(d: Dialog): Promise<void> {
     const msg = d.message();
+    if (Date.now() - this.actedAt > 5000) {
+      // 사람이 누르다 뜬 창이다. 대신 닫지 않고 그대로 둔다 (사람이 읽고 고르도록)
+      this.events.push(`사람이 띄운 창 — 그대로 둠: ${msg}`);
+      return;
+    }
     // 페이지 나가기 확인창은 항상 "머무르기"
     if (d.type() === 'beforeunload') {
       this.events.push('페이지 나가기 차단');

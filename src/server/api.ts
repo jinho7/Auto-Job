@@ -16,14 +16,14 @@ import { ApplyJobManager } from '../apply/jobs';
 import type { ApplyStep } from '../apply/run';
 import { bringSessionToFront } from '../browser/activate';
 import { listPostings } from '../notion/postings';
-import { notify as notifyMac } from '../notify';
+import { notifyBrowser } from '../notify';
 
 let jobManager: ApplyJobManager | null = null;
 /** 설정 화면 서버 하나에 하나: 지원서 대화방들 */
 export function applyJobs(): ApplyJobManager {
   jobManager ??= new ApplyJobManager({
     maxParallel: () => loadSettings().apply.max_parallel,
-    notify: notifyMac,
+    notify: (t, m) => notifyBrowser(loadSettings(), t, m),
     bringToFront: (s) => bringSessionToFront(loadSettings(), s),
   });
   return jobManager;
