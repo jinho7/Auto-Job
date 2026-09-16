@@ -42,6 +42,16 @@ export function toMessage(line: string): { kind: JobMsgKind; text: string } {
   return { kind: 'log', text: t };
 }
 
+/** 대화방에 적은 부탁이 어느 단계를 다시 해야 하는 말인지 (기본은 자기소개서) */
+export function stepsForRequest(text: string): ApplyStep[] {
+  const t = text.replace(/\s+/g, '');
+  const basic = /(인적사항|기본정보|기본사항|학력|경력|자격증|어학|수상|병역|주소|전화|이메일|사진|첨부|파일)/.test(t);
+  const essay = /(자기소개서|자소서|문항|답변|지원동기|성장과정|글자|자수)/.test(t);
+  if (basic && !essay) return ['basic'];
+  if (basic && essay) return ['basic', 'essay'];
+  return ['essay'];
+}
+
 export class ApplyJobManager {
   private seq = 0;
   private nextId = 1;
@@ -82,17 +92,22 @@ export class ApplyJobManager {
     }
   }
 
-  private async run(job: Job): Promise<void> {
+  private async run(job: Job, again?: { request: string; steps: ApplyStep[] }): Promise<void> {
     job.status = 'running';
-    job.activity = '브라우저 창을 여는 중';
-    this.push(job, 'system', '시작합니다. 브라우저에 이 지원서 창을 따로 엽니다.');
+    const session = again ? this.sessions.get(job.id) : undefined;
+    job.activity = again ? '이어서 하는 중' : '브라우저 창을 여는 중';
+    this.push(job, 'system', again ? `이어서 합니다 (${again.steps.includes('basic') ? '인적사항' : '자기소개서'}).${session ? '' : ' 창이 닫혀 있어 다시 엽니다.'}` : '시작합니다. 브라우저에 이 지원서 창을 따로 엽니다.');
     const ctl = new AbortController();
     this.aborts.set(job.id, ctl);
     try {
       const report = await (this.deps.run ?? applyNow)({
         target: job.target,
-        steps: job.steps,
+        steps: again ? again.steps : job.steps,
         window: { newWindow: true, background: true },
+        session,
+        keepSession: true,
+        skipLoginWait: !!again,
+        request: again?.request,
         signal: ctl.signal,
         onSession: (s) => this.sessions.set(job.id, s),
         ask: (q) => this.ask(job, q),
@@ -108,18 +123,20 @@ export class ApplyJobManager {
       job.status = 'done';
       job.activity = report.completed ? '다 썼습니다 — 검토해 주세요 (제출은 직접)' : '끝까지 마치지 못한 부분이 있습니다';
       this.push(job, 'done', formatApplyReport(report));
+      this.push(job, 'system', '고칠 곳이 있으면 여기에 적어 주세요. 예: "3번 문항 더 구체적으로 다시 써 줘", "학력에 부전공 넣어 줘". 이어서 그 창에서 고칩니다.');
       this.attention(job, job.activity, { quiet: true });
     } catch (e) {
       const stopped = ctl.signal.aborted;
       job.status = stopped ? 'stopped' : 'error';
       job.activity = stopped ? '중지했습니다' : `오류: ${(e as Error).message.slice(0, 80)}`;
       this.push(job, stopped ? 'system' : 'error', stopped ? '중지했습니다. 브라우저 창은 그대로 둡니다.' : `멈췄습니다: ${(e as Error).message}`);
+      this.push(job, 'system', '여기에 "이어서 해 줘" 라고 적으면 멈춘 곳에서 그 창 그대로 다시 합니다 (AI 사용량 한도였다면 풀린 뒤에).');
     } finally {
       job.waiting = null;
       job.finishedAt = new Date().toISOString();
       this.pending.delete(job.id);
       this.aborts.delete(job.id);
-      this.sessions.delete(job.id);
+      // 창 연결(세션)은 남겨 둔다 — 대화방에서 이어서 고칠 수 있게. 방을 지울 때 함께 끊는다
       this.pump();
     }
   }
@@ -142,7 +159,7 @@ export class ApplyJobManager {
   }
 
   /** 대화방에서 보낸 말 */
-  answer(id: string, text: string): { answered: boolean } {
+  answer(id: string, text: string): { answered: boolean; resumed?: boolean } {
     const job = this.jobs.get(id);
     if (!job) throw new Error('없는 대화방입니다');
     const t = text.trim();
@@ -150,8 +167,13 @@ export class ApplyJobManager {
     this.push(job, 'you', t);
     const p = this.pending.get(id);
     if (!p) {
-      this.push(job, 'system', '지금은 묻고 있는 것이 없어 기록만 했습니다.');
-      return { answered: false };
+      if (ACTIVE.includes(job.status)) {
+        this.push(job, 'system', '지금은 묻고 있는 것이 없어 기록만 했습니다. 하던 일이 끝나면 여기에 적은 것을 알려 주세요.');
+        return { answered: false };
+      }
+      // 끝났거나 멈춘 방: 적은 말을 부탁으로 보고 그 창에서 이어서 한다
+      void this.run(job, { request: t, steps: stepsForRequest(t) });
+      return { answered: true, resumed: true };
     }
     this.pending.delete(id);
     job.waiting = null;
@@ -181,10 +203,12 @@ export class ApplyJobManager {
     return true;
   }
 
-  /** 끝난 방 지우기 */
+  /** 끝난 방 지우기 (브라우저 창은 남기고 연결만 끊는다) */
   remove(id: string): void {
     const job = this.jobs.get(id);
     if (job && ACTIVE.includes(job.status)) throw new Error('진행 중인 지원서는 먼저 중지해 주세요');
+    void this.sessions.get(id)?.detach().catch(() => {});
+    this.sessions.delete(id);
     this.jobs.delete(id);
   }
 

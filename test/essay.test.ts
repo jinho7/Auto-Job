@@ -191,3 +191,21 @@ test('작성 흐름: 소재 폴더가 있으면 먼저 폴더만 읽어 소재�
   assert.deepEqual([calls[0].tools, calls[0].readDirs], [[], undefined]);
   assert.match(calls[0].prompt, /=== 회고\.md ===\n채팅 서버/);
 });
+
+test('작성 흐름: 고쳐 달라는 부탁이 있으면 그 말이 지시문에 들어간다', async () => {
+  const store = freshProfile();
+  const calls: { prompt: string }[] = [];
+  await writeEssays(
+    { company: '가짜회사', role: '백엔드', questions: [q()], request: '3번 문항은 숫자를 넣어 더 구체적으로 다시 써 줘' },
+    {
+      settings: base,
+      profile: store.toJSON(),
+      schema: store.schema,
+      cwd: tempDir(),
+      runAgent: async (o) => (calls.push({ prompt: o.prompt }), { text: '{"answers":[{"id":1,"text":"짧은 답"}]}', isError: false }),
+    },
+  ).catch(() => {}); // 형식 검사까지는 관심 없음
+  assert.match(calls[0].prompt, /## 사용자가 고쳐 달라고 한 것 \(가장 중요합니다\)/);
+  assert.match(calls[0].prompt, /3번 문항은 숫자를 넣어 더 구체적으로 다시 써 줘/);
+  assert.match(calls[0].prompt, /말한 문항만 고치고, 말하지 않은 문항은 앞의 답을 그대로 다시 내놓으세요/);
+});

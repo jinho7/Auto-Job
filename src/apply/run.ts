@@ -93,6 +93,12 @@ export type ApplyOptions = {
   window?: { newWindow: boolean; background?: boolean };
   /** 브라우저 세션이 열리면 (창 앞으로 가져오기용) */
   onSession?: (s: BrowserSession) => void;
+  /** 이미 열려 있는 지원서 창에 이어서 한다 (다시 열지 않고, 로그인 대기와 사전 조사도 건너뛴다) */
+  session?: BrowserSession;
+  /** 끝나도 브라우저 연결을 끊지 않는다 (대화방에서 이어서 고칠 수 있게) */
+  keepSession?: boolean;
+  /** 사용자가 대화방에서 적은 요청 (예: "3번 문항 더 구체적으로 다시 써 줘") */
+  request?: string;
   /** 중지 */
   signal?: AbortSignal;
 };
@@ -100,7 +106,7 @@ export type ApplyOptions = {
 const TOOL_ICON: Record<string, string> = { fill: '✏️ ', select: '🔽', check: '☑️ ', click: '👆', press: '⌨️ ', upload: '📎', dialog: '💬' };
 const readPrompt = (name: string) => readFileSync(path.join(paths.prompts, name), 'utf8');
 
-export function buildPrompt(target: ApplyTarget, profileDoc: string, files: string[], pre?: PreResearch | null): string {
+export function buildPrompt(target: ApplyTarget, profileDoc: string, files: string[], pre?: PreResearch | null, request?: string): string {
   const chosen = pre?.chosen?.title || target.role || '';
   const others = (pre?.roles ?? []).map((r) => r.title).filter((t) => t !== chosen);
   return [
@@ -110,6 +116,9 @@ export function buildPrompt(target: ApplyTarget, profileDoc: string, files: stri
     '지금 브라우저에 지원서 입력 화면이 열려 있습니다. 규칙에 따라 자기소개서 전까지의 인적사항을 채워 주세요.',
     '먼저 snapshot 으로 화면을 보고 시작하세요. 끝나면 finish 를 호출하세요.',
     '',
+    ...(request?.trim()
+      ? ['## 사용자가 지금 부탁한 것 (이것을 먼저 하세요)', request.trim(), '이미 채워 둔 칸은 이 부탁과 관계없으면 그대로 두세요.', '']
+      : []),
     ...(chosen
       ? [
           '## 지원 직무 (이미 정해졌습니다 — 다시 묻지 마세요)',
@@ -211,7 +220,8 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   // ① 준비
   const target = await resolveTarget(o.target, settings);
   log(`① ${target.company || '지원 페이지'} — ${target.link}`);
-  const session = await BrowserSession.open(settings, o.window ? { ...o.window, url: target.link } : undefined);
+  const resumed = !!o.session;
+  const session = o.session ?? (await BrowserSession.open(settings, o.window ? { ...o.window, url: target.link } : undefined));
   o.onSession?.(session);
   const startedAt = new Date().toISOString();
   const dir = runDir(`apply-${(target.company || 'site').replace(/[^0-9A-Za-z가-힣]+/g, '_').slice(0, 30)}`);
@@ -227,13 +237,13 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   let essay: EssayStepReport | undefined;
   let pre: PreResearch | null = null;
   try {
-    await session.goto(target.link);
+    if (!resumed) await session.goto(target.link);
     // 뒤에서 도는 지원서는 앞으로 끌어오지 않는다 (보고 있던 창을 가로채지 않도록). 사람이 할 일이 생기면 그때 앞으로 온다
-    if (!o.window?.background) await session.bringToFront();
+    if (!o.window?.background && !resumed) await session.bringToFront();
     const targetId = await targetIdOf(session.context, session.page);
 
     // ①-2 로그인 전에: 지원 페이지와 회사 정보를 정리하고 지원 직무를 고른다 → Notion 절차 / 회사 소개 / 지원 직무
-    if (settings.apply.pre_research) {
+    if (settings.apply.pre_research && !resumed) {
       log('① 지원 페이지와 회사 정보를 먼저 정리하고 지원 직무를 고릅니다');
       try {
         const pageText = await collectPageText(session.page);
@@ -265,7 +275,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
     }
 
     // ② 로그인 대기 — 사람만 하는 일
-    if (!o.skipLoginWait) {
+    if (!o.skipLoginWait && !resumed) {
       notify('Auto-Job 지원서', '브라우저에서 로그인/본인인증을 마치고 지원서 입력 화면으로 이동해 주세요');
       const a = await o.ask(
         [
@@ -328,7 +338,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
     // ③ 인적사항 입력 — AI
     if (steps.includes('basic')) {
       log('③ AI 가 인적사항을 입력합니다 (자기소개서 전까지, 제출 버튼은 막혀 있음)');
-      agent = await browserAgent(buildPrompt(target, profileDoc, files, pre), buildSystemPrompt(settings));
+      agent = await browserAgent(buildPrompt(target, profileDoc, files, pre, o.request), buildSystemPrompt(settings));
     }
 
     // ④ 자기소개서 — 문항 찾기(AI+브라우저) → 작성(AI+웹) → 입력(코드)
@@ -347,7 +357,14 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
         log(`   문항 ${essay.questions.length}개: ${essay.questions.map((q) => `${q.id}번${q.maxChars ? `(${q.maxChars}자)` : ''}`).join(', ')}`);
 
         essay.result = await writeEssays(
-          { company: target.company, role: got?.role || pre?.chosen?.title || target.role || '', postingUrl: target.link, questions: essay.questions, known: pre ? preResearchDoc(pre) : undefined },
+          {
+            company: target.company,
+            role: got?.role || pre?.chosen?.title || target.role || '',
+            postingUrl: target.link,
+            questions: essay.questions,
+            known: pre ? preResearchDoc(pre) : undefined,
+            request: o.request,
+          },
           { settings, profile: store.toJSON(), schema: store.schema, cwd: dir, log, signal: o.signal },
         );
         essay.file = path.join(dir, 'essays.md');
@@ -362,7 +379,8 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
               essay.filled.push({ id: q.id, ok: false, message: !q.ref ? '입력칸을 찾지 못함' : '답변 없음' });
               continue;
             }
-            const msg = await tools.fill(q.ref, text).catch((e) => `실패: ${(e as Error).message}`);
+            // 사용자가 다시 써 달라고 한 경우에만 이미 있는 답변을 지우고 새로 넣는다
+            const msg = await tools.fill(q.ref, text, { replace: !!o.request }).catch((e) => `실패: ${(e as Error).message}`);
             const now = await tools.valueOf(q.ref).catch(() => '');
             const ok = now.trim() === text;
             essay.filled.push({ id: q.id, ok, message: ok ? `입력함 (${[...now].length}자)` : now.trim() ? `${msg}${now.trim() !== text ? ' — 들어간 글이 답변과 다릅니다 (사이트가 자르거나 이미 값이 있었음)' : ''}` : msg });
@@ -447,7 +465,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
     return report;
   } finally {
     bridge?.server.close();
-    await session.detach(); // 창은 사용자가 검토하도록 그대로 둔다
+    if (!o.keepSession) await session.detach(); // 창은 사용자가 검토하도록 그대로 둔다
   }
 }
 

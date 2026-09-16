@@ -921,7 +921,8 @@ function appliesPage() {
     const text = input.value;
     input.value = '';
     try {
-      await api('POST', '/api/apply/answer', { id, text });
+      const r = await api('POST', '/api/apply/answer', { id, text });
+      if (r && r.resumed) toast('이어서 고치는 중입니다');
     } catch (e) {
       toast(e.message, true);
       input.value = text;
@@ -962,13 +963,18 @@ function appliesPage() {
       shownJob = job.id;
       shownCount = msgs.length;
     }
-    input.disabled = ['done', 'error', 'stopped'].includes(job.status);
-    input.placeholder = job.status === 'waiting' ? '여기에 답을 적으세요 (Enter 보내기). 비밀번호는 적지 말고 브라우저 창에 직접 입력하세요.' : input.disabled ? '끝난 지원서입니다' : '지금은 묻는 것이 없습니다. 적으면 기록만 합니다.';
+    input.disabled = false;
+    input.placeholder =
+      job.status === 'waiting'
+        ? '여기에 답을 적으세요 (Enter 보내기). 비밀번호는 적지 말고 브라우저 창에 직접 입력하세요.'
+        : ['done', 'error', 'stopped'].includes(job.status)
+          ? '고칠 곳을 적으면 그 창에서 이어서 합니다. 예: "3번 문항 더 구체적으로 다시 써 줘"'
+          : '지금은 묻는 것이 없습니다. 적으면 기록만 했다가, 하던 일이 끝나면 알려 줍니다.';
   };
 
   const newBtn = h('button', { class: 'btn primary', type: 'button', onclick: openPicker }, '+ 새 지원서');
   setTimeout(() => { drawApplies(); pollApplies(); }, 0);
-  return page('지원서 작성', '고른 공고마다 대화방이 생기고, 브라우저에 지원서 창을 따로 열어 함께 진행합니다. 로그인·본인인증처럼 사람이 해야 할 일이 생기면 알림이 오고 그 창이 앞으로 뜨며, 대화방에 빨간 점이 생깁니다. 대화방에 답을 적으면 이어서 합니다. 제출은 하지 않습니다.',
+  return page('지원서 작성', '고른 공고마다 대화방이 생기고, 브라우저에 지원서 창을 따로 열어 뒤에서 진행합니다. 사람이 해야 할 일이 생길 때만 알림과 함께 그 창이 앞으로 뜨고, 대화방에 빨간 점이 생깁니다. 다 쓴 뒤에도 대화방에 "3번 문항 다시 써 줘" 처럼 적으면 그 창에서 이어서 고칩니다. 제출은 하지 않습니다.',
     h('div', { class: 'row', style: 'margin-bottom:12px;gap:12px;flex-wrap:wrap;align-items:center' }, newBtn,
       h('span', { class: 'muted small' }, `동시에 ${state.settings.apply.max_parallel}개까지 진행 (설정 → 작성 → 지원서 입력 규칙)`)),
     h('div', { class: 'rooms' }, list, chat),

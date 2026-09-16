@@ -20,6 +20,8 @@ export type EssayInput = {
   questions: EssayQuestion[];
   /** 지원 전에 이미 조사한 내용 (다시 조사하지 않고, 부족한 것만 보충) */
   known?: string;
+  /** 사용자가 대화방에서 적은 요청 (예: "3번은 더 구체적으로 다시 써 줘") */
+  request?: string;
 };
 
 export type Material = { title: string; source?: string; period?: string; role?: string; facts: string; fits?: number[] };
@@ -100,6 +102,7 @@ export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<Essa
     `지원 직무: ${input.role || '(모름)'}`,
     input.postingUrl ? `공고/지원 페이지: ${input.postingUrl}` : '',
     input.known ? `\n## 지원 전에 이미 조사한 내용 (다시 조사할 필요 없음. 부족한 것만 보충하세요)\n${input.known}` : '',
+    input.request?.trim() ? `\n## 사용자가 고쳐 달라고 한 것 (가장 중요합니다)\n${input.request.trim()}\n말한 문항만 고치고, 말하지 않은 문항은 앞의 답을 그대로 다시 내놓으세요.` : '',
   ].filter(Boolean).join('\n');
   const byId = new Map(input.questions.map((q) => [q.id, q]));
 

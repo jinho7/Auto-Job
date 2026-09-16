@@ -111,3 +111,9 @@ test('리포트: 비워둔 값, 참고사항, 막힌 동작', () => {
   assert.doesNotMatch(md, /끝까지 마치지 못했습니다/);
   assert.match(formatApplyReport({ ...r, completed: false }), /⚠️ AI 가 인적사항 입력을 끝까지 마치지 못했습니다/);
 });
+
+test('이어서 고치기: 사용자가 적은 부탁이 지시문과 자기소개서 입력에 들어간다', () => {
+  const prompt = buildPrompt({ company: '가사', link: 'https://x/apply' }, '내 정보', [], null, '학력에 부전공 넣어 줘');
+  assert.match(prompt, /## 사용자가 지금 부탁한 것 \(이것을 먼저 하세요\)\n학력에 부전공 넣어 줘/);
+  assert.match(prompt, /이미 채워 둔 칸은 이 부탁과 관계없으면 그대로 두세요/);
+});

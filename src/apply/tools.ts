@@ -177,11 +177,17 @@ export class ApplyTools {
   }
 
   // ─── 입력 ───
-  async fill(ref: string, value: string, opts: { typeSlowly?: boolean } = {}): Promise<string> {
+  /** `replace` 는 사용자가 "다시 써 줘" 라고 한 경우에만 코드에서 씁니다 (AI 도구로는 열어 주지 않습니다) */
+  async fill(ref: string, value: string, opts: { typeSlowly?: boolean; replace?: boolean } = {}): Promise<string> {
     const loc = await this.locate(ref);
     const d = await this.describe(loc);
     if (d.disabled) throw new ToolError('비활성화된 칸입니다.');
     if (d.readonly) throw new ToolError('읽기 전용 칸입니다. 옆의 버튼(예: 주소검색)이나 팝업으로 입력하는 칸일 수 있습니다.');
+    if (opts.replace && d.value.trim() && d.value.trim() !== value.trim()) {
+      await loc.fill('');
+      this.record({ tool: 'fill', ref, ok: true, message: `사용자 요청으로 기존 내용(${[...d.value.trim()].length}자)을 지우고 다시 씁니다.` });
+      d.value = '';
+    }
     if (d.value.trim() && d.value.trim() !== value.trim()) {
       return this.record({ tool: 'fill', ref, value, ok: false, message: `이미 "${d.value}" 값이 있어 건드리지 않았습니다 (이미 입력된 값은 수정하지 않음).` });
     }

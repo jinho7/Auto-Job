@@ -2,7 +2,7 @@ import './setup-env';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { ApplyJobManager, toMessage } from '../src/apply/jobs';
+import { ApplyJobManager, stepsForRequest, toMessage } from '../src/apply/jobs';
 import type { ApplyOptions, ApplyReport } from '../src/apply/run';
 import { parseSettings } from '../src/config';
 import { listPostings } from '../src/notion/postings';
@@ -108,4 +108,49 @@ test('고를 공고 목록: 마감 지난 것은 빼고 마감 가까운 순, �
   const list = await listPostings(client, settings, 'ds', new Date('2026-09-15T00:00:00Z'));
   assert.deepEqual(list.map((p) => p.company), ['빠른사', '늦은사', '상시사']);
   assert.equal(list[0].link, 'https://apply/4');
+});
+
+test('대화방: 부탁을 적으면 어느 단계를 다시 할지 고른다', () => {
+  assert.deepEqual(stepsForRequest('3번 문항 더 구체적으로 다시 써 줘'), ['essay']);
+  assert.deepEqual(stepsForRequest('자소서 글자 수 줄여줘'), ['essay']);
+  assert.deepEqual(stepsForRequest('학력에 부전공 넣어 줘'), ['basic']);
+  assert.deepEqual(stepsForRequest('경력이랑 자기소개서 둘 다 손봐 줘'), ['basic', 'essay']);
+  assert.deepEqual(stepsForRequest('이어서 해 줘'), ['essay']); // 기본은 자기소개서
+});
+
+test('대화방: 다 쓴 뒤에도 적으면 그 창에서 이어서 고친다 (한도로 멈춘 뒤 이어서 하기 포함)', async () => {
+  const calls: ApplyOptions[] = [];
+  let fail = true;
+  const m = new ApplyJobManager({
+    maxParallel: () => 2,
+    run: async (o) => {
+      calls.push(o);
+      if (fail) {
+        fail = false;
+        throw new Error('사용량 한도에 도달했습니다');
+      }
+      return report(o);
+    },
+  });
+  const [job] = m.start([{ target: 'a', title: 'A사' }]);
+  await tick();
+  assert.equal(m.jobs.get(job.id)!.status, 'error');
+  assert.match(m.jobs.get(job.id)!.messages.at(-1)!.text, /이어서 해 줘/); // 이어서 하는 법을 알려 준다
+
+  // 한도가 풀린 뒤: 대화방에 적으면 같은 창에서 이어서
+  assert.deepEqual(m.answer(job.id, '이어서 해 줘'), { answered: true, resumed: true });
+  await tick();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].request, '이어서 해 줘');
+  assert.equal(calls[1].skipLoginWait, true); // 다시 로그인하라고 묻지 않는다
+  assert.equal(calls[1].keepSession, true);
+  assert.deepEqual(calls[1].steps, ['essay']);
+  assert.equal(m.jobs.get(job.id)!.status, 'done');
+  assert.match(m.jobs.get(job.id)!.messages.map((x) => x.text).join('\n'), /고칠 곳이 있으면 여기에 적어 주세요/);
+
+  // 다 쓴 방에 고쳐 달라고 하면 그 단계만 다시
+  m.answer(job.id, '학력에 부전공 넣어 줘');
+  await tick();
+  assert.deepEqual(calls[2].steps, ['basic']);
+  assert.equal(calls[2].request, '학력에 부전공 넣어 줘');
 });
