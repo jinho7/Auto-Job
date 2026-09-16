@@ -100,7 +100,9 @@ export type ApplyOptions = {
 const TOOL_ICON: Record<string, string> = { fill: '✏️ ', select: '🔽', check: '☑️ ', click: '👆', press: '⌨️ ', upload: '📎', dialog: '💬' };
 const readPrompt = (name: string) => readFileSync(path.join(paths.prompts, name), 'utf8');
 
-export function buildPrompt(target: ApplyTarget, profileDoc: string, files: string[]): string {
+export function buildPrompt(target: ApplyTarget, profileDoc: string, files: string[], pre?: PreResearch | null): string {
+  const chosen = pre?.chosen?.title || target.role || '';
+  const others = (pre?.roles ?? []).map((r) => r.title).filter((t) => t !== chosen);
   return [
     `지원 회사: ${target.company || '(모름)'}`,
     `지원 페이지: ${target.link}`,
@@ -108,6 +110,17 @@ export function buildPrompt(target: ApplyTarget, profileDoc: string, files: stri
     '지금 브라우저에 지원서 입력 화면이 열려 있습니다. 규칙에 따라 자기소개서 전까지의 인적사항을 채워 주세요.',
     '먼저 snapshot 으로 화면을 보고 시작하세요. 끝나면 finish 를 호출하세요.',
     '',
+    ...(chosen
+      ? [
+          '## 지원 직무 (이미 정해졌습니다 — 다시 묻지 마세요)',
+          `**${chosen}**`,
+          pre?.chosen?.reason ? `고른 이유: ${pre.chosen.reason}` : '',
+          others.length ? `지원하지 않을 직무: ${others.join(', ')}` : '',
+          '지원서에 모집 직무를 고르는 칸이 있으면 이 직무를 고르세요. 목록의 이름이 조금 달라도 가장 가까운 것을 고르면 됩니다.',
+          '한 번 고른 뒤에는 바꾸지 마세요 (바꾸면 쓴 내용이 지워지는 지원서가 있습니다).',
+          '',
+        ].filter(Boolean)
+      : []),
     '## 내 정보',
     profileDoc,
     '',
@@ -315,7 +328,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
     // ③ 인적사항 입력 — AI
     if (steps.includes('basic')) {
       log('③ AI 가 인적사항을 입력합니다 (자기소개서 전까지, 제출 버튼은 막혀 있음)');
-      agent = await browserAgent(buildPrompt(target, profileDoc, files), buildSystemPrompt(settings));
+      agent = await browserAgent(buildPrompt(target, profileDoc, files, pre), buildSystemPrompt(settings));
     }
 
     // ④ 자기소개서 — 문항 찾기(AI+브라우저) → 작성(AI+웹) → 입력(코드)

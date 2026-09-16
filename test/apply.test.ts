@@ -35,6 +35,23 @@ test('지시문: 기본 규칙 + 사용자가 추가한 규칙, 작업 지시에
   const prompt = buildPrompt({ company: '가사', link: 'https://x/apply' }, '### 기본정보\n- 이름: 홍길동', ['photo.jpg']);
   assert.match(prompt, /지원 회사: 가사/);
   assert.match(prompt, /- photo\.jpg/);
+  assert.equal(/지원 직무/.test(prompt), false); // 고른 직무가 없으면 그 안내도 없다
+});
+
+test('지시문: 미리 고른 지원 직무를 알려 주고 다시 묻지 않게 한다', () => {
+  const pre = {
+    roles: [{ title: 'AI 서비스 엔지니어' }, { title: 'Vision AI' }, { title: '철도/트램 DT영업' }],
+    chosen: { title: 'AI 서비스 엔지니어', reason: 'Spring Boot 경험과 맞음' },
+    procedure: [],
+    company: {},
+  };
+  const prompt = buildPrompt({ company: '가사', link: 'https://x/apply' }, '내 정보', [], pre);
+  assert.match(prompt, /## 지원 직무 \(이미 정해졌습니다 — 다시 묻지 마세요\)/);
+  assert.match(prompt, /\*\*AI 서비스 엔지니어\*\*/);
+  assert.match(prompt, /고른 이유: Spring Boot 경험과 맞음/);
+  assert.match(prompt, /지원하지 않을 직무: Vision AI, 철도\/트램 DT영업/);
+  // 사전 조사가 꺼져 있어도 Notion 의 직무 태그가 있으면 그것을 쓴다
+  assert.match(buildPrompt({ company: '가사', link: 'https://x/apply', role: '백엔드' }, '내 정보', []), /\*\*백엔드\*\*/);
 });
 
 test('지원 대상: 주소, 로컬 파일, 잘못된 입력', async () => {
