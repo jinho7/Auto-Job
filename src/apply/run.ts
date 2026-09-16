@@ -22,7 +22,7 @@ import { loadSchema } from '../profile/schema';
 import { ProfileStore } from '../profile/store';
 import { parseNotionId } from '../settings/store';
 import { startBridge, type BridgeEvent } from './bridge';
-import { collectPageText, preResearch, preResearchContent, preResearchDoc, type PreResearch } from './research';
+import { collectPageText, loginWall, preResearch, preResearchContent, preResearchDoc, type PreResearch } from './research';
 import { renderProfileForAgent } from './profile-doc';
 import { ApplyTools, targetIdOf } from './tools';
 
@@ -274,12 +274,15 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
       }
     }
 
-    // ② 로그인 대기 — 사람만 하는 일
-    if (!o.skipLoginWait && !resumed) {
+    // ② 로그인 대기 — 사람만 하는 일. 로그인 화면일 때만 묻는다 (그 밖에는 AI 가 알아서 지원서 화면까지 들어간다)
+    const wall = settings.apply.login_wait === 'always' ? { needed: true, why: '설정이 "늘 묻기"입니다' } : settings.apply.login_wait === 'never' ? { needed: false, why: '설정이 "묻지 않기"입니다' } : await loginWall(session.page).catch(() => ({ needed: false, why: '' }));
+    if (!o.skipLoginWait && !resumed && !wall.needed) log(`② 로그인은 건너뜁니다 (${wall.why}). 지원서 화면까지는 AI 가 들어갑니다 — 로그인이 필요하면 그때 물어봅니다`);
+    if (!o.skipLoginWait && !resumed && wall.needed) {
       notify('Auto-Job 지원서', '브라우저에서 로그인/본인인증을 마치고 지원서 입력 화면으로 이동해 주세요');
       const a = await o.ask(
         [
-          '② 브라우저 창에서 직접 해 주세요: 회원가입·로그인·본인인증·약관 동의 → 지원서의 인적사항 입력 화면까지 이동.',
+          `② ${wall.why} — 브라우저 창에서 직접 해 주세요: 회원가입·로그인·본인인증·약관 동의까지.`,
+          '   (그 뒤로 지원서 화면까지 들어가는 것은 AI 가 합니다. 직접 가 두셔도 됩니다.)',
           loginHelp(settings),
           '   다 되면 알려 주세요 (터미널은 Enter, 대화창은 아무 말이나 / 그만두려면 q 또는 "중지")',
         ]

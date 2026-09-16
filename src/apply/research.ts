@@ -29,6 +29,26 @@ export async function collectPageText(page: Page, max = 40_000): Promise<string>
   return parts.join('\n\n---\n\n').slice(0, max);
 }
 
+/**
+ * 사람이 로그인해야 하는 화면인가.
+ * 비밀번호 칸이 보이거나 주소가 로그인 주소면 사람에게 맡기고, 그 밖에는 AI 가 알아서 들어가게 둔다
+ * (공고 목록·상세·지원서 화면은 AI 가 스스로 이동한다. 가다가 로그인 벽을 만나면 그때 묻는다).
+ */
+export function looksLikeLoginUrl(url: string): boolean {
+  return /\/(login|signin|sign-in|auth|member|account)\b|login\.|\?.*redirect/i.test(url);
+}
+
+export async function loginWall(page: Page): Promise<{ needed: boolean; why: string }> {
+  if (looksLikeLoginUrl(page.url())) return { needed: true, why: '로그인 화면입니다' };
+  for (const f of page.frames()) {
+    const pw = await f
+      .evaluate(`[...document.querySelectorAll('input[type=password]')].some((el) => el.offsetParent !== null || el.getClientRects().length)`)
+      .catch(() => false);
+    if (pw) return { needed: true, why: '비밀번호 입력칸이 보입니다' };
+  }
+  return { needed: false, why: '로그인 화면이 아닙니다' };
+}
+
 export async function preResearch(o: {
   settings: Settings;
   company: string;

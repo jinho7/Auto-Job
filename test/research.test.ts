@@ -2,7 +2,7 @@ import './setup-env';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { preResearch, preResearchContent, preResearchDoc } from '../src/apply/research';
+import { looksLikeLoginUrl, preResearch, preResearchContent, preResearchDoc } from '../src/apply/research';
 import { parseSettings } from '../src/config';
 import type { AgentRun } from '../src/llm/claude-cli';
 import { sectionBlocks } from '../src/notion/page-fill';
@@ -49,4 +49,19 @@ test('지원 전 정리: 페이지 글과 희망 직무로 AI 에게 묻고, 지
 test('지원 전 정리: 직무를 못 고르면 지원 직무 섹션은 비우고, 절차가 없으면 절차도 비운다', () => {
   const content = preResearchContent({ roles: [], chosen: null, procedure: [], company: { summary: '회사' } });
   assert.deepEqual([content.role, content.procedure, content.company?.summary], [undefined, undefined, '회사']);
+});
+
+test('로그인 화면 판별: 로그인 주소만 사람에게 맡긴다', () => {
+  for (const u of [
+    'https://recruit.example.com/login',
+    'https://example.com/member/signin?redirect=/apply',
+    'https://login.example.com/',
+    'https://example.com/auth?next=1',
+  ]) assert.ok(looksLikeLoginUrl(u), u);
+  for (const u of [
+    'https://recruit.example.com/jobs',
+    'https://recruit.example.com/apply/announcement/detail/21933850',
+    'https://example.com/apply/form',
+    'https://example.com/recruit/logincheck-free',
+  ]) assert.ok(!looksLikeLoginUrl(u), u);
 });
