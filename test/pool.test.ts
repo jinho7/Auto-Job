@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
+import { pickMainPid } from '../src/browser/activate';
 import { importPasswords, lastImport, listProfiles } from '../src/browser/default-profile';
 import { loginHelp } from '../src/apply/run';
 import { parseSettings, type Settings } from '../src/config';
@@ -128,6 +129,17 @@ test('기본 프로필 비밀번호 가져오기: 비밀번호 파일만 복사,
   assert.deepEqual(r2.copied, ['Login Data', path.join('Network', 'Cookies')]);
   assert.equal(readFileSync(path.join(auto, 'Default', 'Network', 'Cookies'), 'utf8'), 'SRC-COOKIES');
   assert.equal(lastImport(settings, 'aside')?.cookies, true);
+});
+
+test('브라우저 본체 프로세스 고르기: 도우미(Helper)와 번호가 한 바퀴 돈 경우', () => {
+  const ps = [
+    '  3652 /Applications/Aside.app/Contents/Frameworks/Aside Framework.framework/Versions/1.0/Helpers/Aside Helper (Renderer).app/Contents/MacOS/Aside Helper (Renderer)',
+    ' 90666 /Applications/Aside.app/Contents/MacOS/Aside',
+    ' 90674 /Applications/Aside.app/Contents/Frameworks/Aside Framework.framework/Versions/1.0/Helpers/Aside Helper.app/Contents/MacOS/Aside Helper',
+  ].join('\n');
+  assert.equal(pickMainPid(ps, [3652, 90666, 90674]), 90666); // 번호가 가장 작은 3652 는 도우미
+  assert.equal(pickMainPid('', [7, 3]), 3); // 못 찾으면 가장 작은 번호
+  assert.equal(pickMainPid('', []), null);
 });
 
 test('로그인 대기 안내: 아직 안 가져왔으면 가져오라고 알려 준다', () => {

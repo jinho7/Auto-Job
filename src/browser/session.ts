@@ -17,18 +17,23 @@ export class BrowserSession {
     private readonly guard: GuardConfig,
     public page: Page,
     private readonly tabGuard: Awaited<ReturnType<typeof installGuard>>,
+    /** 창 제목 앞에 붙는 표시 (창이 여러 개일 때 "이 창"을 집어내려고) */
+    readonly mark: string = '',
   ) {}
 
-  static async open(settings: Settings, opts: { newWindow?: boolean; background?: boolean } = {}): Promise<BrowserSession> {
+  static async open(settings: Settings, opts: { newWindow?: boolean; background?: boolean; url?: string } = {}): Promise<BrowserSession> {
     const { driver, guard } = settings.browser;
     if (driver === 'handoff') throw new Error('handoff 드라이버는 브라우저를 직접 조종하지 않습니다');
     const browser = await connectCdp(settings.browser[driver]);
     const context = browser.contexts()[0] ?? (await browser.newContext());
 
     // 가드는 이 세션이 연 탭(과 그 팝업)에만 건다. 같은 브라우저의 다른 탭에는 영향이 없다.
-    const page = opts.newWindow ? await openWindow(browser, context, !!opts.background) : await context.newPage();
+    const n = opts.newWindow ? ++windows : 0;
+    const page = opts.newWindow ? await openWindow(browser, context, { background: !!opts.background, url: opts.url, n }) : await context.newPage();
+    const mark = n ? `[지원 ${n}]` : '';
+    if (mark) await markTitle(page, mark);
     const tabGuard = await installGuard(page, guard);
-    const session = new BrowserSession(browser, context, guard, page, tabGuard);
+    const session = new BrowserSession(browser, context, guard, page, tabGuard, mark);
     // 컨텍스트에 리스너가 있으면 Playwright 가 다른 탭의 대화상자를 자동으로 닫지 않는다. 내 탭 것만 처리한다.
     context.on('dialog', (d) => {
       if (tabGuard.owns(d.page())) void session.onDialog(d);
@@ -86,6 +91,25 @@ export class BrowserSession {
     await this.page.bringToFront();
   }
 
+  /** 이 지원서 창의 화면 위치 (창을 맨 앞으로 올릴 때 어느 창인지 가리키는 데 쓴다) */
+  async windowBounds(): Promise<{ left: number; top: number } | null> {
+    const cdp = await this.context.newCDPSession(this.page).catch(() => null);
+    if (!cdp) return null;
+    try {
+      const { bounds } = (await cdp.send('Browser.getWindowForTarget')) as { bounds: { left?: number; top?: number } };
+      return bounds.left === undefined || bounds.top === undefined ? null : { left: bounds.left, top: bounds.top };
+    } catch {
+      return null;
+    } finally {
+      await cdp.detach().catch(() => {});
+    }
+  }
+
+  /** 창 제목 (위치로 못 찾을 때 제목으로 찾기) */
+  async title(): Promise<string> {
+    return this.page.title().catch(() => '');
+  }
+
   /** 검토하도록 창을 보여준다: 최소화되어 있으면 되돌리고 이 탭을 앞으로 */
   async show(): Promise<void> {
     const cdp = await this.context.newCDPSession(this.page).catch(() => null);
@@ -129,12 +153,88 @@ export class BrowserSession {
   }
 }
 
+/** 브라우저를 갓 띄웠을 때 떠 있는 빈 화면 (빈 탭, 새 탭, 브라우저 홈 화면) */
+const BLANK_PAGE = /^about:blank$|^chrome:\/\/(newtab|new-tab-page)|\/newtab\.html/;
+
+/** 이미 이 세션이 가져간 페이지 (지원서 여러 개가 같은 창을 잡지 않도록) */
+const claimed = new Set<string>();
+
+/** 아직 아무도 안 쓰는 빈 화면이 있으면 그 창을 쓴다 (브라우저 홈 화면만 덩그러니 남는 것을 막는다) */
+async function takeBlankPage(context: BrowserContext): Promise<Page | null> {
+  for (const p of context.pages()) {
+    if (p.isClosed() || !BLANK_PAGE.test(p.url())) continue;
+    const s = await context.newCDPSession(p).catch(() => null);
+    if (!s) continue;
+    const info = (await s.send('Target.getTargetInfo').catch(() => null)) as { targetInfo?: { targetId: string } } | null;
+    await s.detach().catch(() => {});
+    const id = info?.targetInfo?.targetId;
+    if (!id || claimed.has(id)) continue;
+    claimed.add(id);
+    return p;
+  }
+  return null;
+}
+
+/** 이 프로그램이 연 창 수 (창 표시와 놓는 자리에 쓴다) */
+let windows = 0;
+
+/**
+ * 창 제목 앞에 [지원 n] 을 붙인다. 창이 여러 개일 때 어느 창이 어느 지원서인지 보이고,
+ * "창 보기"에서 그 창을 정확히 집어 맨 앞으로 올릴 수 있다. 사이트가 제목을 바꿔도 다시 붙인다.
+ */
+async function markTitle(page: Page, mark: string): Promise<void> {
+  // 가드와 마찬가지로 글(문자열)로 넣는다. 함수로 넣으면 빌드 도구가 붙인 도우미(__name) 때문에 페이지에서 터진다
+  const script = `(function () {
+  var m = ${JSON.stringify(mark)};
+  function set() { if (document.title.indexOf(m) !== 0) document.title = (m + ' ' + document.title).trim(); }
+  function start() { set(); new MutationObserver(set).observe(document.head || document.documentElement, { subtree: true, childList: true, characterData: true }); }
+  if (document.head) start(); else document.addEventListener('DOMContentLoaded', start, { once: true });
+})();`;
+  await page.addInitScript(script).catch(() => {});
+  await page.evaluate(script).catch(() => {});
+}
+
+/**
+ * 새 창은 모두 같은 자리에 겹쳐 열려서 한 창만 열린 것처럼 보인다.
+ * 두 번째 창부터는 조금씩 어긋나게 놓아 창이 여러 개인 게 보이게 한다 (화면이 꽉 차면 조금 줄여서라도).
+ */
+async function cascade(context: BrowserContext, page: Page, n: number): Promise<void> {
+  if (n <= 1) return; // 첫 창은 그대로
+  const cdp = await context.newCDPSession(page).catch(() => null);
+  if (!cdp) return;
+  try {
+    const { windowId, bounds } = (await cdp.send('Browser.getWindowForTarget')) as { windowId: number; bounds: { left?: number; top?: number; width?: number; height?: number } };
+    const screen = await page.evaluate(() => ({ w: window.screen.availWidth, h: window.screen.availHeight })).catch(() => null);
+    if (!screen || bounds.left === undefined || bounds.top === undefined) return;
+    const step = 46;
+    const slots = 4; // 4칸씩 돌려 쓴다 (지원서가 많아도 화면 밖으로 나가지 않게)
+    const width = Math.min(bounds.width ?? screen.w, screen.w - step * slots);
+    const height = Math.min(bounds.height ?? screen.h, screen.h - step * slots);
+    const k = ((n - 2) % slots) + 1;
+    await cdp.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: { left: bounds.left + step * k, top: bounds.top + step * k, width, height, windowState: 'normal' },
+    });
+  } catch {
+    /* 창 조작을 지원하지 않는 브라우저는 그대로 둔다 */
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
+}
+
 /** 새 창을 연다 (지원서를 여러 개 함께 진행할 때 창마다 따로). background 면 지금 창을 가리지 않게 뒤에 연다 */
-async function openWindow(browser: Browser, context: BrowserContext, background: boolean): Promise<Page> {
+async function openWindow(browser: Browser, context: BrowserContext, o: { background: boolean; url?: string; n: number }): Promise<Page> {
+  const spare = await takeBlankPage(context);
+  if (spare) {
+    await cascade(context, spare, o.n);
+    return spare;
+  }
   const cdp = await browser.newBrowserCDPSession();
   try {
-    // 여러 지원서가 동시에 창을 열 수 있어서, "새 페이지가 생겼다"가 아니라 내가 만든 대상(targetId)의 페이지를 찾는다
-    const { targetId } = (await cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true, background })) as { targetId: string };
+    // 여러 지원서가 동시에 창을 열 수 있어서, "새 페이지가 생겼다"가 아니라 내가 만든 대상(targetId)의 페이지를 찾는다.
+    // 주소를 처음부터 넣어 열어야 빈 창이 잠깐 떴다가 바뀌지 않는다.
+    const { targetId } = (await cdp.send('Target.createTarget', { url: o.url || 'about:blank', newWindow: true, background: o.background })) as { targetId: string };
+    claimed.add(targetId);
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
       for (const p of context.pages()) {
@@ -142,7 +242,10 @@ async function openWindow(browser: Browser, context: BrowserContext, background:
         if (!s) continue;
         const info = (await s.send('Target.getTargetInfo').catch(() => null)) as { targetInfo?: { targetId: string } } | null;
         await s.detach().catch(() => {});
-        if (info?.targetInfo?.targetId === targetId) return p;
+        if (info?.targetInfo?.targetId === targetId) {
+          await cascade(context, p, o.n);
+          return p;
+        }
       }
       await new Promise((r) => setTimeout(r, 150));
     }

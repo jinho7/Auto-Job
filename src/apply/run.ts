@@ -198,7 +198,7 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   // ① 준비
   const target = await resolveTarget(o.target, settings);
   log(`① ${target.company || '지원 페이지'} — ${target.link}`);
-  const session = await BrowserSession.open(settings, o.window);
+  const session = await BrowserSession.open(settings, o.window ? { ...o.window, url: target.link } : undefined);
   o.onSession?.(session);
   const startedAt = new Date().toISOString();
   const dir = runDir(`apply-${(target.company || 'site').replace(/[^0-9A-Za-z가-힣]+/g, '_').slice(0, 30)}`);
@@ -215,7 +215,8 @@ export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
   let pre: PreResearch | null = null;
   try {
     await session.goto(target.link);
-    await session.bringToFront();
+    // 뒤에서 도는 지원서는 앞으로 끌어오지 않는다 (보고 있던 창을 가로채지 않도록). 사람이 할 일이 생기면 그때 앞으로 온다
+    if (!o.window?.background) await session.bringToFront();
     const targetId = await targetIdOf(session.context, session.page);
 
     // ①-2 로그인 전에: 지원 페이지와 회사 정보를 정리하고 지원 직무를 고른다 → Notion 절차 / 회사 소개 / 지원 직무
