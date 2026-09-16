@@ -12,6 +12,13 @@ process.stdin.on('end', () => {
   ev({ type: 'thread.started', thread_id: 't1' });
   ev({ type: 'item.started', item: { id: 'i1', type: 'mcp_tool_call', server: 'autojob', tool: 'snapshot', arguments: {} } });
   ev({ type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: '중간 글' } });
+  if (input.includes('LIMIT')) {
+    // 요즘 CLI 는 한도에 걸려도 오류로 끝내지 않고 풀릴 때까지 기다린다
+    ev({ type: 'item.completed', item: { id: 'i9', type: 'agent_message', text: "You've hit your usage limit · resets at 8pm" } });
+    setTimeout(() => {}, 60_000); // 기다리는 흉내
+    return;
+  }
+  if (input.includes('SLEEP')) return void setTimeout(() => {}, 60_000); // 아무 말 없이 멈춰 있는 흉내
   if (input.includes('FAIL')) {
     ev({ type: 'turn.failed', error: { message: '한도 초과' } });
     process.exit(1);

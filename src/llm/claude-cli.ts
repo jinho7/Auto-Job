@@ -26,9 +26,18 @@ export type AgentRun = {
   /** 추론 성능 (low | medium | high | xhigh | max). 연결 종류에 맞게 바꿔 넘긴다 */
   effort?: string;
   cwd: string;
+  /** 이 시간 동안 아무 반응이 없으면 멈추고 다음 연결로 넘어간다 (0 이면 끄기) */
+  stallMs?: number;
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
 };
+
+/**
+ * 한도에 걸린 신호. 요즘 CLI 는 한도에 걸리면 오류로 끝내지 않고 **풀릴 때까지 기다렸다가 이어서** 한다.
+ * 그러면 몇 시간이고 붙잡혀 있게 되므로, 이 말이 보이면 바로 멈추고 다음 AI 연결로 넘어간다.
+ */
+export const LIMIT_SIGNAL =
+  /usage limit reached|limit reached|hit your (?:usage |session |weekly |5-hour )?limit|limit will reset|resets? at \d|사용량 한도에 도달|사용량 한도에 걸|한도에 도달했지만|한도가 초과/i;
 
 const FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
 
@@ -83,13 +92,31 @@ export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
   let final: AgentResult | null = null;
   let startError: Error | null = null;
   child.stderr.on('data', (d) => (stderr += d));
+  let stall: NodeJS.Timeout | null = null;
+  const beat = () => {
+    if (!o.stallMs) return;
+    if (stall) clearTimeout(stall);
+    stall = setTimeout(() => {
+      startError ??= new Error(`AI 가 ${Math.round(o.stallMs! / 60_000)}분 동안 아무 반응이 없어 멈췄습니다 (다음 연결로 넘어갑니다)`);
+      child.kill();
+    }, o.stallMs);
+    stall.unref?.();
+  };
+  beat();
   child.stdout.on('data', (d: Buffer) => {
+    beat();
     buf += d.toString('utf8');
     let nl: number;
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
       if (!line) continue;
+      // 한도 신호는 어떤 메시지로 오든(알림, 이어서 하기 안내) 바로 잡아서 다음 연결로 넘어간다
+      if (LIMIT_SIGNAL.test(line)) {
+        startError ??= new Error(`Claude 사용량 한도에 걸렸습니다: ${line.slice(0, 200)}`);
+        child.kill();
+        continue;
+      }
       let msg: Record<string, any>;
       try {
         msg = JSON.parse(line);
@@ -121,6 +148,7 @@ export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
     child.on('error', (e) => reject((e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('claude 명령을 찾지 못했습니다. Claude Code 를 설치하고 로그인해 주세요.') : e));
     child.on('close', resolve);
   });
+  if (stall) clearTimeout(stall);
   if (startError) throw startError;
   if (!final) throw new Error(`Claude 실행이 결과 없이 끝났습니다 (코드 ${code}). ${stderr.slice(-500)}`);
   return final;

@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { AgentResult, AgentRun } from './claude-cli';
+import { LIMIT_SIGNAL, type AgentResult, type AgentRun } from './claude-cli';
 
 const WEB = new Set(['WebSearch', 'WebFetch']);
 /** TOML 값: 문자열/배열/인라인 표. JSON 문자열 표기는 TOML 기본 문자열로도 유효하다 */
@@ -38,12 +38,30 @@ export async function runCodexAgent(o: AgentRun, bin = 'codex'): Promise<AgentRe
   let lastMessage = '';
   let failure = '';
   child.stderr.on('data', (d) => (stderr += d));
+  let stall: NodeJS.Timeout | null = null;
+  const beat = () => {
+    if (!o.stallMs) return;
+    if (stall) clearTimeout(stall);
+    stall = setTimeout(() => {
+      failure ||= `AI 가 ${Math.round(o.stallMs! / 60_000)}분 동안 아무 반응이 없어 멈췄습니다 (다음 연결로 넘어갑니다)`;
+      child.kill();
+    }, o.stallMs);
+    stall.unref?.();
+  };
+  beat();
   child.stdout.on('data', (d: Buffer) => {
+    beat();
     buf += d.toString('utf8');
     let nl: number;
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
+      // 한도에 걸리면 CLI 가 풀릴 때까지 기다리기도 한다. 그 전에 멈추고 다음 연결로 넘어간다
+      if (LIMIT_SIGNAL.test(line)) {
+        failure ||= `사용량 한도에 걸렸습니다: ${line.slice(0, 200)}`;
+        child.kill();
+        continue;
+      }
       let msg: Record<string, any>;
       try {
         msg = JSON.parse(line);
@@ -63,6 +81,7 @@ export async function runCodexAgent(o: AgentRun, bin = 'codex'): Promise<AgentRe
     child.on('error', (e) => reject((e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('codex 명령을 찾지 못했습니다. Codex CLI 를 설치하고 로그인해 주세요 (npm i -g @openai/codex, codex login).') : e));
     child.on('close', resolve);
   });
+  if (stall) clearTimeout(stall);
   const text = existsSync(lastFile) ? readFileSync(lastFile, 'utf8') : lastMessage;
   const isError = !!failure || (code !== 0 && !text);
   const result = { text: isError ? `Codex 실행 실패: ${failure || stderr.slice(-400) || `코드 ${code}`}` : text, isError };

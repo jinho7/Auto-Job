@@ -49,8 +49,14 @@ test('돌려쓰기: 한도면 쉬게 하고 다음 연결로, 쉬는 연결은 �
   assert.deepEqual(switches, ['a']);
   assert.equal(restingState('a')?.kind, 'limit');
   used.length = 0;
-  await agent(run);
+  const skipMsgs: string[] = [];
+  await agent({ ...run, onEvent: (e) => e.type === 'switch' && skipMsgs.push(`${e.from}: ${e.reason}`) });
   assert.deepEqual(used, ['b']); // 쉬는 a 는 건너뜀, 꺼진 c 는 안 씀
+  assert.equal(skipMsgs.length, 1); // 건너뛴다는 것을 대화방에 한 번은 알려 준다
+  assert.match(skipMsgs[0], /사용량 한도 — .*\d{1,2}:\d{2}까지 쉬는 중이라 건너뜁니다/);
+  skipMsgs.length = 0;
+  await agent({ ...run, onEvent: (e) => e.type === 'switch' && skipMsgs.push(e.from) });
+  assert.deepEqual(skipMsgs, []); // 같은 쉬는 시간 동안 두 번 말하지 않는다
   // 풀리는 시각 뒤에는 다시 a 부터
   aLimited = false;
   const later = agentFor(s, { runOne: async (c) => (used.push(c.id), { text: `ok-${c.id}`, isError: false }), now: () => new Date(Date.now() + 2 * 86_400_000) });

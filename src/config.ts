@@ -79,6 +79,8 @@ export const settingsSchema = z.object({
       .default([]),
     /** 한도에 걸린 연결을 다시 쓰기까지 기다릴 시간 (한도가 풀리는 시각을 모를 때) */
     cooldown_minutes: z.number().int().min(5).max(1440).default(60),
+    /** 이 시간 동안 아무 반응이 없으면 그 연결을 멈추고 다음 연결로 (0 이면 끄기) */
+    stall_minutes: z.number().int().min(0).max(240).default(20),
   }),
   browser: z.object({
     /** handoff 는 예전 설정 호환용 (지원하지 않음 — 고르면 안내하고 멈춘다) */

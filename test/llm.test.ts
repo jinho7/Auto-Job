@@ -9,6 +9,8 @@ import { runApiAgent } from '../src/llm/api-agent';
 import type { AgentEvent, AgentRun } from '../src/llm/claude-cli';
 import { writeClaudeMcpConfig } from '../src/llm/claude-cli';
 import { codexArgs, runCodexAgent } from '../src/llm/codex-cli';
+import { LIMIT_SIGNAL } from '../src/llm/claude-cli';
+import { classifyFailure } from '../src/llm/pool';
 import { connectMcp, type ToolHost } from '../src/llm/tool-host';
 import { paths, ROOT } from '../src/paths';
 import { tempDir } from './helpers';
@@ -208,4 +210,33 @@ test('추론 성능: Claude Code 는 --effort, Codex 는 model_reasoning_effort 
   const dir = tempDir();
   const args = codexArgs({ prompt: 'p', systemAppend: 's', effort: 'max', cwd: dir }, path.join(dir, 'l'));
   assert.ok(args.includes('model_reasoning_effort="high"'));
+});
+
+test('한도 신호: 오류 없이 기다리려 해도 바로 잡아내고, 아무 말 없이 멈춰 있으면 넘어간다', async () => {
+  // 실제로 오는 말들
+  for (const t of [
+    "You've hit your session limit · resets 8:20pm (Asia/Seoul)",
+    'Claude usage limit reached',
+    '작업 중에 사용량 한도에 도달했지만 지금은 재설정되었습니다. 중단했던 부분부터 계속 진행해 주세요.',
+    '5-hour limit reached ∙ your limit will reset at 3pm',
+  ]) {
+    assert.ok(LIMIT_SIGNAL.test(t), t);
+    assert.equal(classifyFailure(`사용량 한도에 걸렸습니다: ${t}`), 'limit');
+  }
+  // 평범한 자기소개서 글은 걸리지 않는다
+  for (const t of ['주어진 한도 안에서 최선을 다했습니다', '예산 한도를 지켰습니다', 'API 사용량을 줄였습니다']) assert.ok(!LIMIT_SIGNAL.test(t), t);
+
+  const dir = tempDir();
+  const bin = path.join(paths.fixtures, 'llm', 'fake-codex.mjs');
+  const base = { systemAppend: '지시', tools: [], cwd: dir };
+
+  const limited = await runCodexAgent({ ...base, prompt: 'LIMIT' }, bin);
+  assert.equal(limited.isError, true);
+  assert.match(limited.text, /사용량 한도에 걸렸습니다/);
+  assert.equal(classifyFailure(limited.text), 'limit'); // → 다음 연결로
+
+  const stalled = await runCodexAgent({ ...base, prompt: 'SLEEP', stallMs: 300 }, bin);
+  assert.equal(stalled.isError, true);
+  assert.match(stalled.text, /아무 반응이 없어/);
+  assert.equal(classifyFailure(stalled.text), 'unavailable'); // → 다음 연결로
 });

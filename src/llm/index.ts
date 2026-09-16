@@ -52,7 +52,7 @@ export function effortFor(settings: Settings, c: Connection, featureEffort?: str
 
 /** 연결 하나로 실행 */
 export function runOnConnection(settings: Settings, c: Connection, o: AgentRun): Promise<AgentResult> {
-  const run = { ...o, model: modelForConnection(settings, c, o.model), effort: effortFor(settings, c, o.effort) };
+  const run = { ...o, model: modelForConnection(settings, c, o.model), effort: effortFor(settings, c, o.effort), stallMs: o.stallMs ?? settings.llm.stall_minutes * 60_000 };
   const dir = c.account_dir ? path.resolve(expandHome(c.account_dir)) : '';
   switch (c.type) {
     case 'claude-cli':
@@ -68,6 +68,9 @@ export function runOnConnection(settings: Settings, c: Connection, o: AgentRun):
 
 export type PoolDeps = { runOne?: (c: Connection, o: AgentRun) => Promise<AgentResult>; now?: () => Date };
 
+/** 쉬는 중이라 건너뛴다는 말은 연결마다 한 번만 (같은 쉬는 시간 동안 매번 말하지 않게) */
+const announced = new Set<string>();
+
 /** 설정의 연결들을 돌려쓰는 AI 실행기 */
 export function agentFor(settings: Settings, d: PoolDeps = {}): RunAgent {
   const runOne = d.runOne ?? ((c: Connection, o: AgentRun) => runOnConnection(settings, c, o));
@@ -78,7 +81,13 @@ export function agentFor(settings: Settings, d: PoolDeps = {}): RunAgent {
     for (const c of all) {
       const rest = restingState(c.id, d.now?.());
       if (rest) {
-        skipped.push(`${connectionLabel(c)}: ${KIND_LABEL[rest.kind]} (${new Date(rest.until).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}까지 쉼)`);
+        const until = new Date(rest.until).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+        skipped.push(`${connectionLabel(c)}: ${KIND_LABEL[rest.kind]} (${until}까지 쉼)`);
+        const key = `${c.id}|${rest.until}`;
+        if (!announced.has(key)) {
+          announced.add(key);
+          o.onEvent?.({ type: 'switch', from: connectionLabel(c), reason: `${KIND_LABEL[rest.kind]} — ${until}까지 쉬는 중이라 건너뜁니다` });
+        }
         continue;
       }
       let r: AgentResult;
