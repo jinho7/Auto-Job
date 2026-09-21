@@ -49,6 +49,7 @@ export function checkEssay(q: EssayQuestion, a: EssayAnswer, essay: Settings['es
   if (!text) issues.push('답변이 비어 있습니다');
   if (q.maxChars && length > q.maxChars) issues.push(`글자수 초과: ${length}${unit} / 최대 ${q.maxChars}`);
   if (q.minChars && length < q.minChars) issues.push(`글자수 부족: ${length}${unit} / 최소 ${q.minChars}`);
+  if (q.kind && q.kind !== 'essay') return { id: a.id, length, issues, warnings };
   const range = targetRange(q);
   if (range && q.maxChars && length <= q.maxChars && length < range.min && !(q.minChars && length < q.minChars)) {
     warnings.push(`분량이 적습니다: ${length}${unit} (최대 ${q.maxChars} 의 90% 이상 권장)`);

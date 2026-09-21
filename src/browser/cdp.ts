@@ -23,6 +23,7 @@ function launch(cfg: CdpBrowserConfig): void {
     `--remote-debugging-port=${cfg.cdp_port}`,
     `--user-data-dir=${cfg.profile_dir}`,
     '--no-first-run',
+    '--restore-last-session',
     // 창이 다른 창에 가려지거나 뒤에 있어도 화면을 계속 그리게 한다 (캡처·입력이 멈추지 않도록)
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
@@ -37,17 +38,23 @@ function launch(cfg: CdpBrowserConfig): void {
 }
 
 /** 여러 지원서를 함께 시작할 때 브라우저를 두 번 띄우지 않도록 */
-let ready: Promise<void> | null = null;
+const ready = new Map<string, Promise<void>>();
 
 /** 이미 떠 있으면 붙고, 없으면 띄운 뒤 붙는다. */
 export async function connectCdp(cfg: CdpBrowserConfig, timeoutMs = 20_000): Promise<Browser> {
   // 확인과 실행을 한 약속으로 묶어, 동시에 불려도 브라우저는 한 번만 띄운다
-  ready ??= (async () => {
+  const key = JSON.stringify([cfg.cdp_port, cfg.app, cfg.profile_dir]);
+  let pending = ready.get(key);
+  if (!pending) {
+    pending = (async () => {
     if (!(await cdpVersion(cfg.cdp_port))) await startAndWait(cfg, timeoutMs);
-  })().finally(() => (ready = null));
-  await ready;
+    })().finally(() => ready.delete(key));
+    ready.set(key, pending);
+  }
+  await pending;
   await ensureWindow(cfg.cdp_port);
-  return chromium.connectOverCDP(`http://127.0.0.1:${cfg.cdp_port}`);
+  try { return await chromium.connectOverCDP(`http://127.0.0.1:${cfg.cdp_port}`, { timeout: 10_000 }); }
+  catch { throw new Error(`자동화 브라우저 연결(${cfg.cdp_port})이 끊겼습니다. 대화에서 다시 이어가기를 요청하면 같은 프로필로 재연결합니다.`); }
 }
 
 async function startAndWait(cfg: CdpBrowserConfig, timeoutMs: number): Promise<void> {

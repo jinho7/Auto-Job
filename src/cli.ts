@@ -22,7 +22,9 @@ import { bootstrapDatabase } from './notion/bootstrap';
 import { checkCurrent, jobWriter, notionClient } from './notion/setup';
 import { parseNotionId } from './settings/store';
 import { openUrl } from './open';
-import { startServer } from './server/server';
+import { startOrReuseUi } from './server/ui-instance';
+import { closeApplyJobs } from './server/api';
+import type { Server } from 'node:http';
 import { paths, runDir } from './paths';
 import { checkProfile } from './profile/check';
 import { applyImport, importProfileText } from './profile/import';
@@ -57,6 +59,18 @@ const settingsStore = () => {
   return new SettingsStore(paths.settings);
 };
 
+async function waitForUiShutdown(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const stop = () => {
+      process.removeListener('SIGINT', stop);
+      process.removeListener('SIGTERM', stop);
+      void closeApplyJobs().then(() => new Promise<void>(r => server.close(() => r()))).then(resolve, reject);
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
+}
+
 // ─── init ───────────────────────────────────────────────
 program
   .command('init')
@@ -81,10 +95,11 @@ program
         ],
       });
       if (how === 'ui') {
-        const { url } = await startServer(4777);
-        console.log(`✅ 설정 화면: ${url}\n   "시작하기" 목록을 따라 하면 됩니다. 끝나면 Ctrl+C`);
-        openUrl(url);
-        await new Promise(() => {});
+        const ui = await startOrReuseUi(4777);
+        console.log(`✅ 설정 화면: ${ui.url}\n   ${ui.reused ? '실행 중인 Auto-Job 화면을 다시 엽니다.' : '"시작하기" 목록을 따라 하면 됩니다. 끝나면 Ctrl+C'}`);
+        openUrl(ui.url);
+        if (!ui.reused) await waitForUiShutdown(ui.server);
+        return;
       }
       if (how === 'terminal') {
         await new SettingsEditor(settingsStore(), inquirerPrompter, console.log, () => (profileStore().get('target.job_roles') as string[] | undefined) ?? []).wizard();
@@ -123,10 +138,10 @@ program
   .action(
     run(async (opts: { port: string; open: boolean }) => {
       ensureInitialized();
-      const { url } = await startServer(Number(opts.port));
-      console.log(`✅ Auto-Job 설정 화면: ${url}\n   (이 주소는 실행할 때마다 바뀝니다. 끄려면 Ctrl+C)`);
-      if (opts.open) openUrl(url);
-      await new Promise(() => {}); // Ctrl+C 까지 유지
+      const ui = await startOrReuseUi(Number(opts.port));
+      console.log(`✅ Auto-Job 설정 화면: ${ui.url}\n   ${ui.reused ? '이미 실행 중인 서버를 사용합니다. 진행 중인 작업은 그대로 유지됩니다.' : '(서버를 새로 시작할 때 주소가 바뀝니다. 끄려면 Ctrl+C)'}`);
+      if (opts.open) openUrl(ui.url);
+      if (!ui.reused) await waitForUiShutdown(ui.server);
     }),
   );
 

@@ -13,6 +13,7 @@ import { loadDutyCategories } from '../collectors/jobkorea';
 import { PoliteHttp } from '../http';
 import { runDoctor } from '../doctor';
 import { ApplyJobManager } from '../apply/jobs';
+import { openAsideHandoff, prepareAsideHandoff } from '../apply/aside-handoff';
 import type { ApplyStep } from '../apply/run';
 import { bringSessionToFront } from '../browser/activate';
 import { listPostings } from '../notion/postings';
@@ -22,12 +23,14 @@ let jobManager: ApplyJobManager | null = null;
 /** 설정 화면 서버 하나에 하나: 지원서 대화방들 */
 export function applyJobs(): ApplyJobManager {
   jobManager ??= new ApplyJobManager({
+    storageFile: path.join(paths.data, 'application-conversations.json'),
     maxParallel: () => loadSettings().apply.max_parallel,
     notify: (t, m) => notifyBrowser(loadSettings(), t, m),
     bringToFront: (s) => bringSessionToFront(loadSettings(), s),
   });
   return jobManager;
 }
+export async function closeApplyJobs(): Promise<void> { await jobManager?.close(); jobManager = null; }
 import { closeAutomationBrowser, defaultDataDir, detectDefaultBrowser, importPasswords, lastImport, listProfiles } from '../browser/default-profile';
 import { addConnection, describeConnections, moveConnection, openLoginTerminal, removeConnection, updateConnection } from '../llm/connections';
 import { clearConnection, connectionsOf, saveConnCheck, type Connection } from '../llm/pool';
@@ -51,6 +54,7 @@ import { paths } from '../paths';
 import { checkProfile } from '../profile/check';
 import { loadSchema } from '../profile/schema';
 import { ProfileStore } from '../profile/store';
+import { hasSearchProfile } from '../profile/search-sources';
 import { connectionKeyName, SECRET_KEYS, secretStatus, setSecret, type SecretKey } from '../secrets';
 import { SOURCE_LABELS, STANDARD_EMPLOYMENT } from '../settings/editor';
 import { parseNotionId, SettingsStore } from '../settings/store';
@@ -66,6 +70,7 @@ export function state() {
   return {
     schema: profile.schema,
     profile: profile.toJSON(),
+    searchProfileReady: hasSearchProfile(profile.toJSON()),
     check: checkProfile(profile.toJSON(), profile.schema, profile.filesDir),
     files: existsSync(profile.filesDir) ? readdirSync(profile.filesDir).filter((f) => !f.startsWith('.')) : [],
     settings: settings.settings,
@@ -144,9 +149,10 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
     return { postings: await listPostings(client, settings, ds.id), statusOptions: settings.notion.status_options };
   },
   'POST /api/apply/start': (b) => {
+    if (b.mode !== undefined && b.mode !== 'autojob' && b.mode !== 'aside') throw new Error('작업 방식을 확인하세요');
     const targets = Array.isArray(b.targets) ? (b.targets as { target?: unknown; title?: unknown }[]).map((t) => ({ target: String(t.target ?? ''), title: t.title ? String(t.title) : undefined })).filter((t) => t.target) : [];
     const steps = (Array.isArray(b.steps) ? b.steps.map(String) : ['basic', 'essay']).filter((x) => x === 'basic' || x === 'essay') as ApplyStep[];
-    const jobs = applyJobs().start(targets, steps.length ? steps : ['basic', 'essay']);
+    const jobs = applyJobs().start(targets, steps.length ? steps : ['basic', 'essay'], b.mode === 'aside' ? 'aside' : 'autojob');
     return { started: jobs.map((j) => j.id), ...applyJobs().snapshot(0) };
   },
   'POST /api/apply/jobs': (b) => applyJobs().snapshot(Number(b.since) || 0),
@@ -154,6 +160,14 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
   'POST /api/apply/stop': (b) => (applyJobs().stop(str(b, 'id')), {}),
   'POST /api/apply/focus': async (b) => ({ focused: await applyJobs().focus(str(b, 'id')) }),
   'POST /api/apply/remove': (b) => (applyJobs().remove(str(b, 'id')), {}),
+  'POST /api/apply/aside': (b) => applyJobs().handoff(str(b, 'id'), prepareAsideHandoff),
+  'POST /api/apply/aside/open': async (b) => {
+    const job = applyJobs().jobs.get(str(b, 'id'));
+    if (job?.executionMode !== 'aside' || !job.asideHandoff) throw new Error('먼저 Aside용 자료를 준비해 주세요.');
+    await openAsideHandoff(job.asideHandoff);
+    return { opened: true };
+  },
+  'POST /api/apply/autojob': (b) => (applyJobs().useAutoJob(str(b, 'id')), {}),
 
   // ── 브라우저 기본 프로필 ──
   'GET /api/browser/default': async () => {

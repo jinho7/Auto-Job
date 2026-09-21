@@ -153,18 +153,18 @@ export const settingsSchema = z.object({
   }),
   apply: z
     .object({
-      /** 인적사항 입력 AI 에게 줄 추가 규칙 (기본 규칙은 prompts/fill-basic-info.md) */
+      /** 지원서 에이전트에게 줄 사용자 규칙 (기본: prompts/application-agent.md) */
       extra_rules: z.array(z.string()).default([]),
       /** 비우면 AI 연결의 기본 모델 */
       model: z.string().default(''),
       effort: EFFORT,
-      /** 로그인 전에 지원 페이지·회사 정보를 정리하고 지원 직무를 골라 Notion 에 먼저 넣는다 */
+      /** 이전 설정 파일 호환용. 현재 에이전트가 조사 시점을 판단한다 */
       pre_research: z.boolean().default(true),
-      /** 로그인 대기: auto(로그인 화면일 때만 묻기) | always(늘 묻기) | never(묻지 않기) */
+      /** 이전 설정 파일 호환용. 현재 에이전트가 필요한 인증을 요청한다 */
       login_wait: z.enum(['auto', 'always', 'never']).default('auto'),
       /** 설정 화면에서 지원서를 여러 개 맡길 때 동시에 진행할 개수 (나머지는 차례를 기다림) */
       max_parallel: z.number().int().min(1).max(8).default(4),
-      /** 다 쓰고 나서 누를 임시저장 버튼 문구 (앞에 있는 것부터 찾음) */
+      /** 이전 설정 파일 호환용. 현재는 AI가 화면에서 저장 버튼을 선택한다. */
       save_buttons: z.array(z.string()).default(['임시저장', '임시 저장', '중간저장', '저장하기', '저장']),
       /** 다 쓰고 나서 임시저장을 누를지 */
       save_draft: z.boolean().default(true),

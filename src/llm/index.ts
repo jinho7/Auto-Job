@@ -75,10 +75,12 @@ const announced = new Set<string>();
 export function agentFor(settings: Settings, d: PoolDeps = {}): RunAgent {
   const runOne = d.runOne ?? ((c: Connection, o: AgentRun) => runOnConnection(settings, c, o));
   return async (o: AgentRun) => {
+    o.signal?.throwIfAborted();
     const all = connectionsOf(settings).filter((c) => c.enabled);
     const skipped: string[] = [];
     const tried: string[] = [];
     for (const c of all) {
+      o.signal?.throwIfAborted();
       const rest = restingState(c.id, d.now?.());
       if (rest) {
         const until = new Date(rest.until).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
@@ -94,6 +96,7 @@ export function agentFor(settings: Settings, d: PoolDeps = {}): RunAgent {
       try {
         r = await runOne(c, o);
       } catch (e) {
+        o.signal?.throwIfAborted();
         const msg = (e as Error).message;
         const kind = classifyFailure(msg) ?? (/명령을 찾지 못했습니다/.test(msg) ? 'unavailable' : null);
         if (!kind) throw e;
@@ -102,6 +105,7 @@ export function agentFor(settings: Settings, d: PoolDeps = {}): RunAgent {
         o.onEvent?.({ type: 'switch', from: connectionLabel(c), reason: `${KIND_LABEL[kind]} — ${msg.slice(0, 80)}` });
         continue;
       }
+      o.signal?.throwIfAborted();
       const kind = r.isError ? classifyFailure(r.text) : null;
       if (kind) {
         markConnection(c.id, kind, r.text, settings, d.now?.());

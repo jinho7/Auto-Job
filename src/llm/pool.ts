@@ -31,7 +31,7 @@ export type FailureKind = 'limit' | 'auth' | 'unavailable';
 export function classifyFailure(text: string): FailureKind | null {
   if (/usage limit|hit your .*limit|limit reached|rate.?limit|quota|insufficient_quota|credit balance|too many requests|\b429\b|\b529\b|overloaded|사용량 한도/i.test(text)) return 'limit';
   if (/not logged in|please run \/login|invalid api key|invalid x-api-key|authentication|unauthorized|\b401\b|codex login|API 키를 넣어|API_KEY 가 없습니다/i.test(text)) return 'auth';
-  if (/명령을 찾지 못했습니다|ENOENT|아무 반응이 없어/.test(text)) return 'unavailable';
+  if (/명령을 찾지 못했습니다|ENOENT|아무 반응이 없어|requires approval|승인이 필요/i.test(text)) return 'unavailable';
   return null;
 }
 

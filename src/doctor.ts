@@ -10,6 +10,7 @@ import { paths } from './paths';
 import { checkProfile } from './profile/check';
 import { loadSchema } from './profile/schema';
 import { ProfileStore } from './profile/store';
+import { hasSearchProfile } from './profile/search-sources';
 import { getSecret } from './secrets';
 
 export type CheckStatus = 'ok' | 'warn' | 'bad';
@@ -62,8 +63,10 @@ export async function runDoctor(d: DoctorDeps = {}): Promise<Check[]> {
   }
 
   // 내 정보
+  let searchReady = false;
   try {
     const store = new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema));
+    searchReady = hasSearchProfile(store.toJSON());
     const r = checkProfile(store.toJSON(), store.schema, store.filesDir);
     const status: CheckStatus = r.errors.length ? 'bad' : r.missing.length ? 'warn' : 'ok';
     add({
@@ -81,9 +84,10 @@ export async function runDoctor(d: DoctorDeps = {}): Promise<Check[]> {
   // 공고 수집
   const c = s.collect;
   const hasQuery = c.keywords.length || c.jasoseol.duty_groups.length || c.jobkorea.duty_categories.length || c.wanted.job_group_ids.length;
-  add({ id: 'keywords', label: '검색 키워드', status: hasQuery ? 'ok' : 'warn', detail: !hasQuery
-      ? '없음 — 공고를 모으려면 필요합니다'
-      : [c.keywords.length ? `${c.keywords.length}개: ${c.keywords.slice(0, 5).join(', ')}` : '키워드 없음', c.jasoseol.duty_groups.length || c.jobkorea.duty_categories.length || c.wanted.job_group_ids.length ? '사이트 직무 분류로도 검색' : ''].filter(Boolean).join(' · '), page: ['settings', 'keywords'], cmd: 'autojob settings add collect.keywords <키워드>' });
+  add({ id: 'keywords', label: '맞춤 검색 자료', status: searchReady || hasQuery ? 'ok' : 'warn', detail: searchReady
+      ? `수집할 때 내 정보·연결 폴더를 분석합니다. 추가 검색어 ${c.keywords.length}개 (선택 사항)`
+      : hasQuery ? '개인 자료 없음 — 직접 지정한 검색어·사이트 직무 분류로만 검색합니다'
+      : '희망 직무·경험을 입력하거나 소재 폴더를 연결해 주세요. 추가 검색어는 선택 사항입니다.', page: ['profile', 'stories'], cmd: 'autojob profile edit' });
   const on = COLLECTORS.filter((x) => c.sources[x.id]);
   const usable = on.filter((x) => x.status === 'ok');
   const skipped = on.filter((x) => x.status !== 'ok');

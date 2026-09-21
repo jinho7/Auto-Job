@@ -105,7 +105,7 @@ function renderChrome() {
   const c = state.check;
   document.getElementById('summary').replaceChildren(
     h('span', { class: `badge ${c.missing.length || c.errors.length ? 'warn' : 'ok'}` }, `내 정보 ${c.filled}/${c.total}`),
-    h('span', { class: `badge ${s.collect.keywords.length ? 'ok' : 'warn'}` }, `키워드 ${s.collect.keywords.length}개`),
+    h('span', { class: `badge ${state.searchProfileReady ? 'ok' : ''}` }, state.searchProfileReady ? '내 자료 기반 검색' : `추가 검색어 ${s.collect.keywords.length}개 (선택)`),
     h('span', { class: `badge ${state.secrets.NOTION_TOKEN.set && s.notion.data_source_id ? 'ok' : 'warn'}` }, state.secrets.NOTION_TOKEN.set ? (s.notion.data_source_id ? 'Notion 연결됨' : 'Notion DB 미선택') : 'Notion 미연결'),
     h('span', { class: 'badge ok' }, `브라우저 ${s.browser.driver}`),
   );
@@ -113,7 +113,7 @@ function renderChrome() {
 
 function settingsBadge(id) {
   const s = state.settings;
-  if (id === 'keywords' && !s.collect.keywords.length) return h('span', { class: 'badge warn' }, '비어 있음');
+  if (id === 'keywords' && !s.collect.keywords.length) return h('span', { class: 'badge' }, '선택');
   if (id === 'notion' && !(state.secrets.NOTION_TOKEN.set && s.notion.data_source_id)) return h('span', { class: 'badge warn' }, '설정 필요');
   if (id === 'applies') {
     const waiting = applyState.jobs.filter((j) => j.status === 'waiting').length;
@@ -189,8 +189,8 @@ function storiesFolderCard() {
   draw().catch((e) => list.replaceChildren(h('div', { class: 'notice bad' }, e.message)));
   const isMac = /Mac/.test(navigator.platform || navigator.userAgent);
   return card('소재 폴더 연결',
-    h('p', { class: 'muted small', style: 'margin-top:0' }, '경험을 정리해 둔 폴더(프로젝트 회고, 활동 정리, 이력서, 포트폴리오 …)를 연결하면, 자기소개서를 쓸 때 AI 가 이 폴더의 md · txt · pdf 파일을 읽고 문항에 맞는 소재를 찾습니다. 파일을 옮기거나 복사하지 않고, 폴더 밖의 파일은 읽지 않습니다. 소재를 찾는 동안에는 웹을 쓰지 않아 파일 내용이 밖으로 나가지 않습니다.'),
-    state.settings.llm.backend !== 'claude-cli' ? h('div', { class: 'notice' }, '지금 AI 연결 방식에서는 PDF 를 읽지 못합니다 (md, txt 만). PDF 까지 읽으려면 AI 연결을 Claude Code 로 두세요.') : null,
+    h('p', { class: 'muted small', style: 'margin-top:0' }, '경험을 정리해 둔 폴더(프로젝트 회고, 활동 정리, 이력서, 포트폴리오 …)를 연결하면 공고 수집 때 내 정보와 함께 읽어 맞춤 검색 직무를 정하고, 자기소개서를 쓸 때 문항에 맞는 소재를 찾습니다. 자료 내용은 선택한 AI 연결에 전달됩니다. 검색 분석은 연결한 폴더의 md · txt · pdf만 읽으며 웹 검색이나 파일 수정 도구를 사용하지 않습니다.'),
+    h('div', { class: 'hint' }, '공고 검색의 PDF 읽기는 로컬 pdftotext가 필요합니다. 읽지 못한 파일은 검색 결과에 표시합니다. 자소서 소재 분석의 PDF 읽기는 Claude Code 연결에서 지원합니다.'),
     list,
     h('div', { class: 'row', style: 'margin-top:8px' },
       isMac ? h('button', { class: 'btn primary', type: 'button', onclick: async (e) => {
@@ -523,7 +523,13 @@ function settingsPage(id) {
   const s = state.settings;
   switch (id) {
     case 'keywords':
-      return page('검색 키워드', '채용 사이트에서 이 키워드로 공고를 검색합니다.', card(null, chipEditor('collect.keywords', { emptyText: '아직 키워드가 없습니다' })));
+      return page('검색 키워드 (선택)', '기본 검색은 내 정보와 연결한 자료 폴더를 읽고, 나에게 맞는 직무와 검색어를 AI가 정합니다. 더 찾아보고 싶은 검색어만 여기에 추가하세요.',
+        card('내 자료 기반 검색',
+          h('p', { class: 'muted small' }, '수집할 때마다 경험·기술·희망 조건을 읽어 검색어를 만들고, 검색 결과에 직무별 선정 이유와 출처를 표시합니다. 직접 추가한 검색어는 함께 사용합니다. 사이트 직무 분류와 기업 구분 등 설정한 필터도 적용됩니다.'),
+          h('div', { class: 'row' },
+            h('button', { class: 'btn', onclick: () => go('profile', 'stories') }, '자료 폴더 연결'),
+            h('button', { class: 'btn', onclick: () => go('profile', 'target') }, '희망 조건 보기'))),
+        card('추가 검색어 (선택)', chipEditor('collect.keywords', { emptyText: '비워 두면 내 자료에서 검색어를 정합니다', placeholder: '추가로 찾을 직무나 검색어' })));
 
     case 'sources':
       return sourcesPage();
@@ -600,7 +606,7 @@ function settingsPage(id) {
         card('쓰지 않을 표현',
           h('p', { class: 'muted small', style: 'margin-top:0' }, '~ 자리는 아무 말이나 들어가는 자리입니다. 띄어쓰기는 무시하고, ~ 바로 뒤의 조사는 짝(을/를, 이/가 …)도 같이 찾습니다.'),
           chipEditor('essay.banned_phrases', { placeholder: '예: 단순한 ~가 아닌' })),
-        card('작성 방식',
+        card('브라우저 없이 자소서만 작성할 때 (CLI)',
           modelEffortRow('AI 모델 · 추론 성능', 'essay.model', 'essay.effort', '비우면 AI 연결의 기본. 자기소개서는 추론 성능을 높게 두면 더 꼼꼼하게 씁니다.'),
           textSetting('검토 후 고쳐 쓰기 횟수', 'essay.max_revisions', { type: 'number', hint: '0~3. 검토 AI 가 지적한 내용(지어낸 내용, 질문 의도 등)을 반영해 고쳐 쓰는 횟수' }),
           h('p', { class: 'muted small' }, '순서: 회사·직무 조사 → 문항 전체 전략 → 작성 → 기계 검사(글자수, 금지 표현, 블라인드 등) → 검토 → 고쳐 쓰기. 사실은 내 정보와 자소서 소재에 있는 것만 씁니다.'),
@@ -608,35 +614,25 @@ function settingsPage(id) {
       );
 
     case 'apply':
-      return page('지원서 입력 규칙', '"autojob apply" 로 지원서의 인적사항(자기소개서 전까지)을 채울 때 AI 가 따르는 규칙입니다.',
+      return page('지원서 입력 규칙', 'AI가 자료와 실제 화면을 보며 지원서 전체를 작성합니다. 요청 범위와 작성 선호를 설정하세요.',
         card('기본 규칙 (항상 적용)', h('ul', { style: 'margin:0;padding-left:18px' },
-          ['이미 입력된 값은 수정하거나 삭제하지 않는다', '내 정보에 없는 값은 추정하지 않고 빈칸으로 두고, 비운 칸을 기록한다', '자기소개서와 자유 서술형 칸은 채우지 않는다',
+          ['사용자가 입력한 값은 보존하고, 자료로 확인되는 기본값 오류나 잘린 내용은 바로잡는다', '확인되지 않은 개인 정보는 확정하지 않고, 비운 칸과 사유를 기록한다', '자기소개서와 서술형 답변도 요청 범위에 맞춰 작성한다. 안내 확인칸은 자소서와 구별한다',
             '제출·작성완료 버튼은 누르지 않는다 (코드로도 막음). 임시저장은 괜찮다', '삭제·로그아웃·작성취소는 누르지 않는다 (코드로도 막음)', '날짜는 칸의 형식에 맞추고, 주소는 팝업에서 검색해 고른다',
             '로그인·본인인증·CAPTCHA·약관 동의는 사용자에게 맡긴다'].map((r) => h('li', null, r))),
-          h('p', { class: 'muted small' }, '전체 내용: prompts/fill-basic-info.md')),
+          h('p', { class: 'muted small' }, '작업 목표와 안전 경계: prompts/application-agent.md')),
         card('추가 규칙', chipEditor('apply.extra_rules', { placeholder: '예: 희망 연봉은 "회사 내규에 따름"을 고른다', emptyText: '(없음)' })),
-        card('로그인하기 전에',
-          toggle('지원 페이지와 회사 정보를 먼저 정리하고 지원 직무를 고르기', 'apply.pre_research'),
-          h('p', { class: 'muted small' }, '지원 페이지 글과 웹 검색으로 모집 직무·전형 절차·회사 소개를 정리하고, 내 희망 직무에 맞는 지원 직무를 골라 Notion 의 절차 / 회사·조직 소개 / 지원 직무에 먼저 넣습니다. 이 조사는 자기소개서를 쓸 때 다시 씁니다.'),
-          h('div', { class: 'field', style: 'margin-top:10px' },
-            h('label', null, '로그인 맡기기'),
-            radios('login_wait', 'apply.login_wait', [
-              ['auto', '로그인 화면일 때만 (권장)'],
-              ['always', '시작할 때 늘 한 번 묻기'],
-              ['never', '묻지 않기'],
-            ]),
-            h('div', { class: 'hint' }, '공고 목록·상세·지원서 화면은 AI 가 스스로 들어갑니다. 로그인·본인인증처럼 사람만 할 수 있는 일을 만나면 그때 대화방에서 물어봅니다.'))),
+        card('작업 방식', h('p', null, '기본은 Auto-Job입니다. 같은 AI가 대화·자료·화면을 읽고 작성 순서를 판단합니다. 팝업 선택, 자료 읽기, 자소서 작성과 수정도 직접 수행합니다.'),
+          h('p', { class: 'muted small' }, '새 지원서 또는 각 대화방에서 Aside 패널을 선택할 수도 있습니다. 내 정보·연결 자료·이전 대화를 전달하고 Aside에서 직접 이어갑니다. 모델과 도구는 Aside 설정을 사용하며, 진행·중지·결과 확인도 Aside에서 합니다.')),
         card('다 쓰고 나서',
           toggle('임시저장 버튼 누르기 (최종 제출은 절대 누르지 않음)', 'apply.save_draft'),
-          h('p', { class: 'muted small' }, '임시저장 버튼 문구 (앞에 있는 것부터 찾습니다. 제출 차단 가드도 그대로 적용됩니다)'),
-          chipEditor('apply.save_buttons', { placeholder: '예: 중간저장' }),
+          h('p', { class: 'muted small' }, 'AI가 화면에서 임시저장 버튼을 찾아 누르고 저장 결과를 확인합니다.'),
           toggle('Notion 공고 페이지 본문 채우고 제출 상태 바꾸기', 'apply.update_notion'),
-          h('p', { class: 'muted small' }, '본문 제목과 바꿀 상태는 연결 → Notion 에서 정합니다. 이미 내용이 있는 섹션은 건드리지 않습니다.')),
+          h('p', { class: 'muted small' }, '본문 제목과 바꿀 상태는 연결 → Notion 에서 정합니다. 기존 내용을 읽고 변경된 답변·작성 상태를 갱신한 뒤 다시 확인합니다.')),
         card('AI 모델 · 동시 진행',
-          modelEffortRow('모델 · 추론 성능', 'apply.model', 'apply.effort', '비우면 AI 연결의 기본. 인적사항 입력은 Sonnet 5 · 중간 정도로도 충분한 경우가 많습니다.'),
+          modelEffortRow('모델 · 추론 성능', 'apply.model', 'apply.effort', '비우면 AI 연결의 기본. 대화·화면 조작·자소서까지 같은 모델이 수행합니다.'),
           textSetting('동시에 진행할 지원서 수', 'apply.max_parallel', { type: 'number', hint: '설정 화면에서 여러 개를 맡길 때 한꺼번에 진행할 개수 (1~8). 나머지는 차례를 기다립니다. 많을수록 AI 사용량이 빨리 닳습니다.' })),
         card('실행 방법', h('pre', { style: 'margin:0;white-space:pre-wrap' }, 'autojob apply <Notion 공고 페이지 주소 또는 지원 페이지 주소>'),
-          h('p', { class: 'muted small' }, '브라우저가 열리면 로그인·본인인증을 직접 하고 인적사항 입력 화면까지 간 뒤 터미널에서 Enter 를 누르세요. 끝나면 비워둔 값과 참고사항을 알려줍니다. 제출은 하지 않습니다.')),
+          h('p', { class: 'muted small' }, 'AI가 지원서 화면까지 이동해 작업합니다. 인증 요청이 오면 실제 사이트에서 직접 처리하고 대화로 알려 주세요. 완료와 미완료, 저장 확인 상태를 구별해 표시합니다.')),
       );
 
     case 'notion':
@@ -892,8 +888,8 @@ function llmPage() {
 
     card('작업별 AI',
       h('p', { class: 'muted small', style: 'margin-top:0' }, '작업마다 모델과 추론 성능을 따로 정합니다. 비우면 위 연결의 설정 → 아래 기본값 순서로 씁니다. 다른 회사 모델 이름(예: Codex 연결에 claude-…)은 알아서 건너뜁니다. 추론 성능이 높을수록 꼼꼼하지만 느리고 사용량이 많이 듭니다.'),
-      modelEffortRow('지원서 입력 (인적사항)', 'apply.model', 'apply.effort'),
-      modelEffortRow('자기소개서', 'essay.model', 'essay.effort'),
+      modelEffortRow('지원서 전체 에이전트', 'apply.model', 'apply.effort'),
+      modelEffortRow('자소서 단독 실행 (CLI)', 'essay.model', 'essay.effort'),
       modelEffortRow('지원 페이지 찾기 (수집)', 'collect.link_search.model', 'collect.link_search.effort'),
       modelEffortRow('직무 태그 (수집)', 'collect.ai_roles.model', 'collect.ai_roles.effort')),
     card('기본 설정',
@@ -904,7 +900,7 @@ function llmPage() {
 
 // ─── 지원서 작성: 여러 개를 함께, 지원서마다 대화방 ─────────
 const applyState = { seq: 0, jobs: [], msgs: {}, active: null, prevStatus: {} };
-const STATUS_TEXT = { queued: ['', '대기'], running: ['ok', '진행 중'], waiting: ['bad', '확인 필요'], done: ['ok', '완료'], error: ['bad', '오류'], stopped: ['', '중지'] };
+const STATUS_TEXT = { queued: ['', '대기'], running: ['ok', '진행 중'], waiting: ['bad', '확인 필요'], done: ['ok', '완료'], error: ['bad', '오류'], stopped: ['', '중지'], idle: ['', '대화 대기'] };
 let applyTimer = null;
 
 let applyPolling = false;
@@ -939,24 +935,63 @@ async function pollApplies() {
 }
 
 let drawApplies = null;
+async function showAsideHandoff(id) {
+  const back = h('div', { class: 'modal-back' });
+  const box = h('div', { class: 'modal' }, h('p', null, '이 작업을 정리하고 Aside용 자료를 준비하고 있습니다…'));
+  back.append(box); document.body.append(back);
+  try {
+    const data = await api('POST', '/api/apply/aside', { id });
+    await pollApplies();
+    const prompt = h('textarea', { readOnly: true, style: 'width:100%;min-height:180px', 'aria-label': 'Aside에 붙여넣을 요청' }, data.prompt);
+    const status = h('p', { class: 'muted small', role: 'status' });
+    const copy = async () => {
+      try { await navigator.clipboard.writeText(data.prompt); status.textContent = '복사했습니다. Aside 우측 Ask Aside 패널에 붙여넣고 보내세요.'; return true; }
+      catch { prompt.focus(); prompt.select(); status.textContent = '자동 복사가 안 됩니다. 선택된 요청을 직접 복사해 주세요.'; return false; }
+    };
+    box.replaceChildren(
+      h('h2', { style: 'margin-top:0' }, 'Aside 패널에서 이어가기'),
+      h('p', null, '내 정보와 연결 자료 경로, 이전 대화를 준비했습니다. 아래 요청을 Aside의 Ask Aside 패널에 붙여넣으면 Aside에 설정된 AI가 직접 작업합니다.'),
+      h('p', { class: 'muted small' }, '기존 브라우저의 저장 전 값은 자동으로 옮겨지지 않습니다. Aside에서는 사이트에 저장된 내용을 다시 확인합니다. 이후 대화·중지·완료 확인은 Aside에서 하며 Auto-Job에 자동 동기화되지는 않습니다.'),
+      prompt,
+      h('p', { class: 'muted small', style: 'overflow-wrap:anywhere' }, `자료 파일: ${data.file}`),
+      status,
+      h('div', { class: 'row', style: 'gap:6px;justify-content:flex-end' },
+        h('button', { class: 'btn', type: 'button', onclick: () => back.remove() }, '닫기'),
+        h('button', { class: 'btn', type: 'button', onclick: copy }, '요청 복사'),
+        h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+          if (!await copy()) return;
+          try { await api('POST', '/api/apply/aside/open', { id }); }
+          catch (e) { status.textContent = e.message; }
+        } }, '복사하고 Aside 열기')),
+    );
+    back.onclick = e => { if (e.target === back) back.remove(); };
+  } catch (e) {
+    box.replaceChildren(h('p', { class: 'notice', role: 'alert' }, e.message), h('button', { class: 'btn', type: 'button', onclick: () => back.remove() }, '닫기'));
+    pollApplies();
+  }
+}
+
 function appliesPage() {
   const list = h('div', { class: 'room-list' });
   const head = h('div', { class: 'chat-head' });
   const body = h('div', { class: 'chat-body' });
   const input = h('textarea', { placeholder: '여기에 답을 적으세요 (Enter 보내기, Shift+Enter 줄바꿈). 비밀번호는 적지 말고 브라우저 창에 직접 입력하세요.' });
   const sendBtn = h('button', { class: 'btn primary', type: 'button' }, '보내기');
+  let sending = false;
+  const draftKey = id => `autojob-chat-draft:${id}`;
+  input.addEventListener('input', () => { if (applyState.active) sessionStorage.setItem(draftKey(applyState.active), input.value); });
   const send = async () => {
     const id = applyState.active;
-    if (!id || !input.value.trim()) return;
+    if (!id || !input.value.trim() || sending) return;
     const text = input.value;
-    input.value = '';
+    sending = true; sendBtn.disabled = true;
     try {
-      const r = await api('POST', '/api/apply/answer', { id, text });
-      if (r && r.resumed) toast('이어서 고치는 중입니다');
+      await api('POST', '/api/apply/answer', { id, text });
+      if (sessionStorage.getItem(draftKey(id)) === text) sessionStorage.removeItem(draftKey(id));
+      if (applyState.active === id && input.value === text) input.value = '';
     } catch (e) {
       toast(e.message, true);
-      input.value = text;
-    }
+    } finally { sending = false; sendBtn.disabled = false; }
     pollApplies();
   };
   sendBtn.onclick = send;
@@ -978,12 +1013,17 @@ function appliesPage() {
     const job = applyState.jobs.find((j) => j.id === applyState.active);
     chat.style.display = job ? '' : 'none';
     if (!job) return;
+    const inAside = job.executionMode === 'aside';
+    foot.style.display = inAside ? 'none' : '';
+    if (shownJob !== job.id) input.value = sessionStorage.getItem(draftKey(job.id)) || '';
     head.replaceChildren(
-      h('div', null, h('strong', null, job.title), ' ', h('span', { class: `badge ${STATUS_TEXT[job.status][0]}` }, STATUS_TEXT[job.status][1])),
+      h('div', null, h('strong', null, job.title), ' ', h('span', { class: `badge ${STATUS_TEXT[job.status][0]}` }, inAside ? 'Aside 패널' : STATUS_TEXT[job.status][1])),
       h('div', { class: 'row', style: 'gap:6px' },
-        ['running', 'waiting', 'done'].includes(job.status) || job.status === 'error' ? h('button', { class: 'btn', type: 'button', onclick: async () => { const r = await api('POST', '/api/apply/focus', { id: job.id }).catch((e) => toast(e.message, true)); if (r && !r.focused) toast('이 지원서의 창은 이미 끝나 연결이 없습니다. 브라우저에서 직접 확인해 주세요.'); } }, '창 보기') : null,
-        ['queued', 'running', 'waiting'].includes(job.status) ? h('button', { class: 'btn danger', type: 'button', onclick: () => confirm(`${job.title} 지원서를 중지할까요? (입력한 칸과 창은 그대로 둡니다)`) && api('POST', '/api/apply/stop', { id: job.id }).then(pollApplies).catch((e) => toast(e.message, true)) }, '중지') : null,
-        ['done', 'error', 'stopped'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: () => api('POST', '/api/apply/remove', { id: job.id }).then(() => { delete applyState.msgs[job.id]; applyState.active = null; pollApplies(); }).catch((e) => toast(e.message, true)) }, '방 지우기') : null),
+        h('button', { class: 'btn', type: 'button', onclick: () => showAsideHandoff(job.id) }, inAside ? '자료 복사 · Aside 열기' : 'Aside로 이어가기'),
+        inAside ? h('button', { class: 'btn', type: 'button', title: 'Aside 작업을 먼저 마친 후 전환하세요', onclick: () => api('POST', '/api/apply/autojob', { id: job.id }).then(pollApplies).catch(e => toast(e.message, true)) }, 'Auto-Job으로 전환') : null,
+        !inAside && ['running', 'waiting', 'done', 'error', 'stopped', 'idle'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: async () => { const r = await api('POST', '/api/apply/focus', { id: job.id }).catch((e) => toast(e.message, true)); if (r && !r.focused) toast('이 지원서의 창은 이미 끝나 연결이 없습니다. 브라우저에서 직접 확인해 주세요.'); } }, '창 보기') : null,
+        !inAside && ['queued', 'running', 'waiting'].includes(job.status) ? h('button', { class: 'btn danger', type: 'button', onclick: () => confirm(`${job.title} 지원서를 중지할까요? (입력한 칸과 창은 그대로 둡니다)`) && api('POST', '/api/apply/stop', { id: job.id }).then(pollApplies).catch((e) => toast(e.message, true)) }, '중지') : null,
+        ['done', 'error', 'stopped', 'idle'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: () => api('POST', '/api/apply/remove', { id: job.id }).then(() => { delete applyState.msgs[job.id]; applyState.active = null; pollApplies(); }).catch((e) => toast(e.message, true)) }, '방 지우기') : null),
     );
     const msgs = applyState.msgs[job.id] || [];
     if (shownJob !== job.id || shownCount !== msgs.length) {
@@ -997,14 +1037,14 @@ function appliesPage() {
     input.placeholder =
       job.status === 'waiting'
         ? '여기에 답을 적으세요 (Enter 보내기). 비밀번호는 적지 말고 브라우저 창에 직접 입력하세요.'
-        : ['done', 'error', 'stopped'].includes(job.status)
-          ? '고칠 곳을 적으면 그 창에서 이어서 합니다. 예: "3번 문항 더 구체적으로 다시 써 줘"'
-          : '지금은 묻는 것이 없습니다. 적으면 기록만 했다가, 하던 일이 끝나면 알려 줍니다.';
+        : ['done', 'error', 'stopped', 'idle'].includes(job.status)
+          ? '자유롭게 질문하거나 이어가기를 요청하세요. 예: "왜 이 직무야?", "3번 문항 다시 써 줘"'
+          : '질문하거나 새 지시를 보내세요. 이 회사의 현재 실행을 멈추고 AI가 답하거나 이어갑니다.';
   };
 
   const newBtn = h('button', { class: 'btn primary', type: 'button', onclick: openPicker }, '+ 새 지원서');
   setTimeout(() => { drawApplies(); pollApplies(); }, 0);
-  return page('지원서 작성', '고른 공고마다 대화방이 생기고, 브라우저에 지원서 창을 따로 열어 뒤에서 진행합니다. 사람이 해야 할 일이 생길 때만 알림과 함께 그 창이 앞으로 뜨고, 대화방에 빨간 점이 생깁니다. 다 쓴 뒤에도 대화방에 "3번 문항 다시 써 줘" 처럼 적으면 그 창에서 이어서 고칩니다. 제출은 하지 않습니다.',
+  return page('지원서 작성', '회사별 AI에게 자유롭게 질문하거나 지시하세요. 새 메시지는 해당 회사의 실행만 멈추고 반영합니다. 인증은 실제 브라우저에서 직접 하고 알려 주세요. 대화와 연결한 탭은 재시작 후에도 복구하며, 최종 제출은 직접 합니다.',
     h('div', { class: 'row', style: 'margin-bottom:12px;gap:12px;flex-wrap:wrap;align-items:center' }, newBtn,
       h('span', { class: 'muted small' }, `동시에 ${state.settings.apply.max_parallel}개까지 진행 (설정 → 작성 → 지원서 입력 규칙)`)),
     h('div', { class: 'rooms' }, list, chat),
@@ -1038,6 +1078,8 @@ async function openPicker() {
   const extraBox = h('div', { class: 'chips', style: 'margin-top:6px' });
   const stepBasic = h('input', { type: 'checkbox', checked: true });
   const stepEssay = h('input', { type: 'checkbox', checked: true });
+  const mode = h('select', { 'aria-label': '지원서 작업 방식' }, h('option', { value: 'autojob' }, 'Auto-Job에서 작성 (기본)'), h('option', { value: 'aside' }, 'Aside 패널에서 직접 작성'));
+  mode.onchange = () => { startBtn.textContent = mode.value === 'aside' ? 'Aside용 자료 준비' : '시작'; };
   const total = () => picked.size + extra.length;
   const draw = () => {
     const words = q.value.trim().toLowerCase();
@@ -1054,16 +1096,17 @@ async function openPicker() {
   };
   const startBtn = h('button', { class: 'btn primary', type: 'button', onclick: async () => {
     const steps = [stepBasic.checked && 'basic', stepEssay.checked && 'essay'].filter(Boolean);
-    if (!steps.length) return toast('할 단계를 골라 주세요', true);
+    if (!steps.length) return toast('작성할 범위를 골라 주세요', true);
     const targets = [...postings.filter((p) => picked.has(p.id)).map((p) => ({ target: p.url, title: p.company })), ...extra.map((u) => ({ target: u, title: u.replace(/^https?:\/\//, '').split('/')[0] }))];
     startBtn.disabled = true;
     try {
-      const r = await api('POST', '/api/apply/start', { targets, steps });
+      const r = await api('POST', '/api/apply/start', { targets, steps, mode: mode.value });
       back.remove();
       applyState.active = r.started[0];
-      toast(`${r.started.length}개 지원서를 시작했습니다`);
+      toast(mode.value === 'aside' ? `${r.started.length}개 공고를 선택했습니다. 각 대화방에서 Aside로 가져갈 수 있습니다.` : `${r.started.length}개 지원서를 시작했습니다`);
       go('settings', 'applies');
       pollApplies();
+      if (mode.value === 'aside' && r.started[0]) showAsideHandoff(r.started[0]);
     } catch (e) {
       toast(e.message, true);
       startBtn.disabled = false;
@@ -1082,6 +1125,7 @@ async function openPicker() {
     h('div', { class: 'row', style: 'gap:6px;margin-top:10px' }, urlIn, h('button', { class: 'btn', type: 'button', onclick: () => { const u = urlIn.value.trim(); if (!/^https?:\/\//.test(u)) return toast('https:// 로 시작하는 주소를 넣어 주세요', true); if (total() >= MAX) return toast(`최대 ${MAX}개입니다`, true); extra.push(u); urlIn.value = ''; draw(); } }, '넣기')),
     h('div', { class: 'row', style: 'gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center' },
       h('label', { class: 'small' }, stepBasic, ' 인적사항'), h('label', { class: 'small' }, stepEssay, ' 자기소개서'), count),
+    h('div', { class: 'row', style: 'gap:8px;margin-top:10px' }, h('label', null, '작업 방식 ', mode)),
     h('div', { class: 'row', style: 'gap:6px;margin-top:12px;justify-content:flex-end' }, h('button', { class: 'btn', type: 'button', onclick: () => back.remove() }, '취소'), startBtn),
   );
   draw();
@@ -1103,7 +1147,7 @@ function startPage() {
         ))))),
     );
   }).catch((e) => box.replaceChildren(h('div', { class: 'notice bad' }, e.message)));
-  return page('시작하기', '처음 쓰는 순서: ① AI 연결 ② 내 정보 ③ 검색 키워드와 기업 구분 ④ Notion 연결 ⑤ 브라우저에서 채용 사이트 로그인 ⑥ 공고 수집 미리보기 → 등록 ⑦ 지원서 작성(autojob apply).',
+  return page('시작하기', '처음 쓰는 순서: ① AI 연결 ② 내 정보와 자료 폴더 연결 ③ 수집 사이트와 기업 구분 (검색어 추가는 선택) ④ Notion 연결 ⑤ 브라우저에서 채용 사이트 로그인 ⑥ 공고 수집 미리보기 → 등록 ⑦ 지원서 작성(autojob apply).',
     box,
     card('지원서 작성',
       h('p', { class: 'muted small', style: 'margin-top:0' }, '실행 → 지원서 작성에서 Notion 공고를 골라 여러 개를 함께 맡길 수 있습니다. 터미널에서 하나씩 하려면:'),
@@ -1141,10 +1185,10 @@ function collectPage() {
   };
 
   const warn = [];
-  if (!s.collect.keywords.length && !s.collect.jasoseol.duty_groups.length && !s.collect.jobkorea.duty_categories.length && !s.collect.wanted.job_group_ids.length) warn.push('검색 키워드가 없습니다 (검색 조건 → 검색 키워드).');
+  if (!state.searchProfileReady) warn.push('맞춤 검색을 위해 내 정보에 희망 직무·경험을 입력하거나 소재 폴더를 연결해 주세요. 직접 지정한 검색어·사이트 직무 분류만으로도 검색할 수 있습니다.');
   if (!(state.secrets.NOTION_TOKEN.set && s.notion.data_source_id)) warn.push('Notion 이 연결되지 않아 미리보기만 할 수 있습니다.');
 
-  return page('공고 수집', '켜 둔 사이트에서 공고를 모아 경력직, 고용형태, 마감, 기업 구분으로 거르고, 실제 지원 페이지를 확인한 뒤 Notion 에 등록합니다. 중복은 넣지 않습니다.',
+  return page('공고 수집', '내 정보와 연결한 자료를 읽어 맞춤 검색어를 정한 뒤, 켜 둔 사이트에서 공고를 모읍니다. 설정한 경력·고용형태·마감·기업 구분으로 거르고 실제 지원 페이지를 확인합니다.',
     warn.length ? h('div', { class: 'notice' }, h('ul', { style: 'margin:0' }, warn.map((w) => h('li', null, w)))) : null,
     card(null,
       h('div', { class: 'field' }, h('label', null, '사이트'), picks),
@@ -1178,10 +1222,18 @@ function drawCollect(box, r) {
     card(rep.dryRun ? '미리보기 결과' : '수집 결과',
       h('ul', { class: 'result' }, rep.sources.map((s) => h('li', null, `${s.error ? '❌' : '✅'} ${s.label}: ${s.error || `${s.count}건`}`))),
       h('div', { class: 'chips', style: 'margin-top:10px' }, Object.entries(rep.counts).map(([k, v]) => h('span', { class: 'chip', style: 'padding-right:10px' }, `${r.labels[k] || k} ${v}`))),
-      rep.ai && (rep.ai.linkSearched || rep.ai.rolesTagged || rep.ai.errors.length)
+      rep.ai && (rep.ai.linkSearched || rep.ai.rolesTagged || rep.ai.errors.length || rep.ai.costUsd)
         ? h('p', { class: 'small' }, `AI: 지원 페이지 ${rep.ai.linkSearched}건 중 ${rep.ai.linkFound}건 찾음 · 직무 태그 ${rep.ai.rolesTagged}건 보정${rep.ai.costUsd ? ` · $${rep.ai.costUsd.toFixed(2)}` : ''}${rep.ai.errors.length ? ` · ⚠️ ${rep.ai.errors.join(' / ')}` : ''}`)
         : null,
       h('p', { class: 'muted small' }, `리포트 파일: ${r.dir}`)),
+    rep.searchPlan ? card(rep.searchPlan.mode === 'profile' ? '내 자료로 정한 검색 방향' : '직접 지정한 조건으로 검색',
+      h('p', { class: 'small' }, `검색어: ${rep.searchPlan.keywords.join(', ') || '사이트 직무 분류 사용'}`),
+      h('p', { class: 'muted small' }, `연결 파일 ${rep.searchPlan.filesRead}개 분석 · 직무 탐색을 위한 추론이며 지원 자격 충족 판정은 아닙니다.`),
+      ...rep.searchPlan.directions.map((d) => h('div', { class: 'field' }, h('strong', null, d.role), h('div', { class: 'small' }, d.reason),
+        h('div', { class: 'muted small' }, `검색어: ${d.keywords.join(', ')}`),
+        h('details', null, h('summary', { class: 'small' }, '선정 근거'),
+          ...rep.searchPlan.evidence.filter((e) => d.evidence_ids.includes(e.id)).map((e) => h('p', { class: 'small', style: 'white-space:pre-wrap;overflow-wrap:anywhere' }, `${e.source}\n${e.fact}\n“${e.quote}”`))))),
+      ...rep.searchPlan.warnings.map((w) => h('p', { class: 'notice' }, w))) : null,
     section('registered', '✅ Notion 에 등록'),
     section('would_register', '📝 등록 대상'),
     section('no_link', '🔗 지원 페이지를 찾지 못해 뺀 공고'),
@@ -1279,7 +1331,7 @@ function notionPage() {
 
   const SECTION_LABEL = { procedure: '전형 절차', company: '회사/조직 소개', role: '지원 직무', essays: '자기소개서 문항과 답변', projects: '프로젝트·동아리 입력란', documents: '제출 서류' };
   const sectionCard = card('7. 지원서 작성 후 채울 본문 제목',
-    h('p', { class: 'muted small', style: 'margin-top:0' }, `autojob apply 가 끝나면 공고 페이지 본문에서 아래 제목을 찾아 그 아래에 내용을 넣고, 제출 상태를 "${s.notion.status_options.after_apply}"(으)로 바꿉니다. 내 템플릿의 제목과 같게 맞춰 주세요. 이미 내용이 있는 섹션은 건드리지 않습니다.`),
+    h('p', { class: 'muted small', style: 'margin-top:0' }, `AI가 연결된 공고 페이지를 읽고 아래 제목에 맞춰 작성 결과를 정리합니다. 작성 상태는 "${s.notion.status_options.after_apply}"(으)로 바꿉니다. 내 템플릿의 제목과 같게 맞춰 주세요. 기존 조사와 메모는 보존하고, 요청한 답변 수정은 본문에도 반영합니다. 사이트 임시저장과 Notion 반영을 각각 확인합니다.`),
     Object.entries(SECTION_LABEL).map(([k, label]) => textSetting(label, `notion.section_map.${k}`)),
   );
 

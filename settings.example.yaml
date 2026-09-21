@@ -96,7 +96,7 @@ collect:
     catch: true                # 캐치: 채용공고 목록 + 상세 (robots.txt 허용 범위)
     wanted: false              # 원티드: robots.txt 를 읽을 수 있을 때만 수집 (지금은 사이트가 robots.txt 요청을 막고 있음)
     incruit: false             # robots.txt 가 모든 자동 접근을 막아 수집하지 않음
-  keywords: []                 # 검색 키워드. `autojob settings` → 검색 키워드에서 추가
+  keywords: []                 # 선택: 내 정보·연결 폴더에서 AI가 만든 검색어에 추가할 검색어
   employment_types:            # 수집할 고용형태
     - 신입
     - 인턴
@@ -137,14 +137,12 @@ collect:
 
 # ─── 지원서 작성 ───────────────────────────────────────────
 apply:
-  extra_rules: []              # 인적사항 입력 AI 에게 줄 추가 규칙 (기본 규칙: prompts/fill-basic-info.md)
+  extra_rules: []              # 지원서 전체 에이전트에게 줄 사용자 규칙 (prompts/application-agent.md)
   model: ""                    # 비우면 AI 연결의 기본 모델
   effort: ""                   # 추론 성능 (비우면 AI 연결의 기본)
-  pre_research: true           # 로그인 전에 지원 페이지·회사 정보를 정리하고 지원 직무를 골라 Notion(절차, 회사 소개, 지원 직무)에 먼저 넣음
-  login_wait: auto             # auto: 로그인 화면일 때만 사람에게 맡김 / always: 늘 한 번 묻기 / never: 묻지 않고 AI 가 알아서 (필요하면 AI 가 그때 물어봄)
   max_parallel: 4              # 설정 화면에서 여러 지원서를 맡길 때 동시에 진행할 개수 (1~8)
   save_draft: true             # 다 쓰고 나서 임시저장 버튼을 누른다 (최종 제출은 절대 누르지 않음)
-  save_buttons:                # 임시저장 버튼 문구 (앞에 있는 것부터 찾음)
+  save_buttons:                # 이전 설정 호환용 (현재는 AI가 화면에서 저장 버튼을 선택)
     - 임시저장
     - 임시 저장
     - 중간저장

@@ -29,9 +29,10 @@ export type DataSource = { id: string; title: string; databaseId?: string; prope
 const plain = (t?: RichText) => (t ?? []).map((x) => x.plain_text).join('');
 
 export class NotionClient {
-  constructor(private readonly token: string, private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly token: string, private readonly fetchImpl: typeof fetch = fetch, private readonly signal?: AbortSignal) {}
 
   private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
+    this.signal?.throwIfAborted();
     const res = await this.fetchImpl(`https://api.notion.com/v1${path}`, {
       method,
       headers: {
@@ -40,7 +41,7 @@ export class NotionClient {
         'Content-Type': 'application/json',
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
+      signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });
     const json = (await res.json().catch(() => ({}))) as { code?: string; message?: string };
     if (!res.ok) {
@@ -126,6 +127,10 @@ export class NotionClient {
     await this.req('PATCH', `/pages/${pageId}`, { properties });
   }
 
+  async updateBlock(blockId: string, body: Record<string, unknown>): Promise<void> {
+    await this.req('PATCH', `/blocks/${blockId}`, body);
+  }
+
   /** 페이지(블록)의 첫 몇 개 자식 블록 */
   async listBlocks(blockId: string, pageSize = 10): Promise<{ id: string; type: string }[]> {
     const r = await this.req<{ results: { id: string; type: string }[] }>('GET', `/blocks/${blockId}/children?page_size=${pageSize}`);
@@ -148,16 +153,19 @@ export class NotionClient {
   }
 
   /** 자식 블록 추가. afterBlockId 가 있으면 그 블록 바로 뒤에, 없으면 맨 끝에 (100개씩 나눠 보냄) */
-  async appendBlocks(parentId: string, children: unknown[], afterBlockId?: string): Promise<void> {
+  async appendBlocks(parentId: string, children: unknown[], afterBlockId?: string): Promise<NotionBlock[]> {
     let after = afterBlockId;
+    const added: NotionBlock[] = [];
     for (let i = 0; i < children.length; i += 100) {
       const chunk = children.slice(i, i + 100);
-      const r = await this.req<{ results: { id: string }[] }>('PATCH', `/blocks/${parentId}/children`, {
+      const r = await this.req<{ results: NotionBlock[] }>('PATCH', `/blocks/${parentId}/children`, {
         children: chunk,
         ...(after ? { position: { type: 'after_block', after_block: { id: after } } } : {}),
       });
+      added.push(...(r.results ?? []));
       if (after) after = r.results?.at(-1)?.id ?? after; // 다음 묶음은 방금 넣은 마지막 블록 뒤에
     }
+    return added;
   }
 
   /** 이 연결이 볼 수 있는 페이지 (새 DB 를 만들 위치 고르기용) */

@@ -1,30 +1,30 @@
-// autojob apply: ① 준비 → ② 로그인 대기(사람) → ③ 인적사항 입력(AI) → ④ 자기소개서(문항 찾기 → 작성 → 입력) → 리포트
+// One application agent owns the conversation, browser, source reading and writing.
 // 제출은 하지 않는다. 브라우저 창은 사용자가 검토하도록 그대로 둔다.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { lastImport } from '../browser/default-profile';
 import { BrowserSession } from '../browser/session';
 import { loadSettings, type Settings } from '../config';
-import { parseLimit } from '../essay/checks';
-import { formatEssays, writeEssays, type EssayResult } from '../essay/pipeline';
+import { parseLimit, checkEssay, blindTermsFromProfile } from '../essay/checks';
+import { applicationToolset, type AgentTaskState } from './agent-tools';
+import { formatEssays, type EssayResult } from '../essay/pipeline';
 import type { CountUnit, EssayQuestion } from '../essay/types';
 import { agentFor, modelFor } from '../llm';
 import type { AgentResult } from '../llm/claude-cli';
-import { propText } from '../notion/client';
-import { fillPageSections, setSubmitStatus, type PageContent, type SectionResult } from '../notion/page-fill';
+import { NotionClient, propText } from '../notion/client';
+import { notionToolset, type NotionProgress } from './notion-tools';
+import { type PageContent, type SectionResult } from '../notion/page-fill';
 import { notionClient } from '../notion/setup';
 import { getSecret } from '../secrets';
-import { notifyBrowser } from '../notify';
-import { DATA_HOME, paths, ROOT, runDir } from '../paths';
-import { checkProfile } from '../profile/check';
+import { paths, ROOT, runDir } from '../paths';
 import { loadSchema } from '../profile/schema';
 import { ProfileStore } from '../profile/store';
 import { parseNotionId } from '../settings/store';
 import { startBridge, type BridgeEvent } from './bridge';
-import { collectPageText, loginWall, preResearch, preResearchContent, preResearchDoc, type PreResearch } from './research';
+import { conversationTools } from './conversation-tools';
 import { renderProfileForAgent } from './profile-doc';
-import { ApplyTools, targetIdOf } from './tools';
+import { PlaywrightMcp } from './playwright-mcp';
 
 export type ApplyTarget = { company: string; link: string; role?: string; notionPageId?: string; notionUrl?: string };
 export type ApplyStep = 'basic' | 'essay';
@@ -62,10 +62,13 @@ export type ApplyReport = {
   steps: ApplyStep[];
   summary: string;
   blanks: { field: string; reason: string }[];
+  blanksReviewed?: boolean;
   notes: string[];
   actions: Extract<BridgeEvent, { type: 'action' }>[];
   agent: { text: string; isError: boolean; costUsd?: number };
-  /** 인적사항 AI 가 finish 까지 마쳤는지 (인적사항 단계를 건너뛰었으면 true) */
+  outcome?: 'completed' | 'incomplete' | 'answered';
+  remaining?: string[];
+  /** 이번 사용자 요청의 완료 여부 (단순 AI 종료와 구별) */
   completed: boolean;
   essay?: EssayStepReport;
   /** 문항 찾기 단계에서 기록한 지원서 구성, 직무명 (Notion 정리에 씀) */
@@ -74,7 +77,7 @@ export type ApplyReport = {
   /** ⑤ 임시저장 */
   save?: { ok: boolean; label?: string; message: string; dialogs: string[] };
   /** ⑥ Notion 정리 */
-  notion?: { sections: SectionResult[]; status?: string; error?: string };
+  notion?: Partial<NotionProgress> & { sections?: SectionResult[]; status?: string };
   dir: string;
   screenshot?: string;
 };
@@ -92,13 +95,17 @@ export type ApplyOptions = {
   /** 지원서마다 새 창으로 연다 (여러 개를 함께 진행할 때). background 면 뒤에 연다 */
   window?: { newWindow: boolean; background?: boolean };
   /** 브라우저 세션이 열리면 (창 앞으로 가져오기용) */
-  onSession?: (s: BrowserSession) => void;
+  onSession?: (s: BrowserSession) => void | Promise<void>;
+  onNotion?: (state: NotionProgress) => void;
+  onRole?: (role: { title: string; reason: string }) => void;
+  role?: { title: string; reason: string };
   /** 이미 열려 있는 지원서 창에 이어서 한다 (다시 열지 않고, 로그인 대기와 사전 조사도 건너뛴다) */
   session?: BrowserSession;
   /** 끝나도 브라우저 연결을 끊지 않는다 (대화방에서 이어서 고칠 수 있게) */
   keepSession?: boolean;
   /** 사용자가 대화방에서 적은 요청 (예: "3번 문항 더 구체적으로 다시 써 줘") */
   request?: string;
+  context?: Record<string, unknown>;
   /** 중지 */
   signal?: AbortSignal;
 };
@@ -106,40 +113,8 @@ export type ApplyOptions = {
 const TOOL_ICON: Record<string, string> = { fill: '✏️ ', select: '🔽', check: '☑️ ', click: '👆', press: '⌨️ ', upload: '📎', dialog: '💬' };
 const readPrompt = (name: string) => readFileSync(path.join(paths.prompts, name), 'utf8');
 
-export function buildPrompt(target: ApplyTarget, profileDoc: string, files: string[], pre?: PreResearch | null, request?: string): string {
-  const chosen = pre?.chosen?.title || target.role || '';
-  const others = (pre?.roles ?? []).map((r) => r.title).filter((t) => t !== chosen);
-  return [
-    `지원 회사: ${target.company || '(모름)'}`,
-    `지원 페이지: ${target.link}`,
-    '',
-    '지금 브라우저에 지원서 입력 화면이 열려 있습니다. 규칙에 따라 자기소개서 전까지의 인적사항을 채워 주세요.',
-    '먼저 snapshot 으로 화면을 보고 시작하세요. 끝나면 finish 를 호출하세요.',
-    '',
-    ...(request?.trim()
-      ? ['## 사용자가 지금 부탁한 것 (이것을 먼저 하세요)', request.trim(), '이미 채워 둔 칸은 이 부탁과 관계없으면 그대로 두세요.', '']
-      : []),
-    ...(chosen
-      ? [
-          '## 지원 직무 (이미 정해졌습니다 — 다시 묻지 마세요)',
-          `**${chosen}**`,
-          pre?.chosen?.reason ? `고른 이유: ${pre.chosen.reason}` : '',
-          others.length ? `지원하지 않을 직무: ${others.join(', ')}` : '',
-          '지원서에 모집 직무를 고르는 칸이 있으면 이 직무를 고르세요. 목록의 이름이 조금 달라도 가장 가까운 것을 고르면 됩니다.',
-          '한 번 고른 뒤에는 바꾸지 마세요 (바꾸면 쓴 내용이 지워지는 지원서가 있습니다).',
-          '',
-        ].filter(Boolean)
-      : []),
-    '## 내 정보',
-    profileDoc,
-    '',
-    '## 올릴 수 있는 파일 (profile/me/files)',
-    files.length ? files.map((f) => `- ${f}`).join('\n') : '(없음)',
-  ].join('\n');
-}
-
 export function buildSystemPrompt(settings: Settings): string {
-  const base = readPrompt('fill-basic-info.md');
+  const base = readPrompt('application-agent.md');
   const extra = settings.apply.extra_rules.filter((r) => r.trim());
   return extra.length ? `${base}\n\n## 사용자가 추가한 규칙\n${extra.map((r) => `- ${r}`).join('\n')}` : base;
 }
@@ -158,6 +133,7 @@ export function normalizeQuestions(raw: unknown[]): EssayQuestion[] {
       return {
         id: i + 1,
         question: String(r.question).trim(),
+        ...(['essay', 'notice', 'short_answer'].includes(String(r.kind)) ? { kind: r.kind as EssayQuestion['kind'] } : {}),
         unit: units.includes(r.unit as CountUnit) ? (r.unit as CountUnit) : fromText.unit,
         ...(maxChars ? { maxChars } : {}),
         ...(minChars ? { minChars } : {}),
@@ -203,315 +179,133 @@ export function loginHelp(settings: Settings, mark = lastImport): string {
 }
 
 export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
-  const log = o.log ?? console.log;
-  const notify = o.notify ?? ((t: string, m: string) => notifyBrowser(settings, t, m));
-  const steps: ApplyStep[] = o.steps?.length ? o.steps : ['basic', 'essay'];
+  const check = () => o.signal?.throwIfAborted();
+  check();
   const settings = loadSettings();
-  if (settings.browser.driver === 'handoff') throw new Error('handoff 브라우저 설정에서는 자동 입력을 할 수 없습니다. 설정 → 브라우저에서 Aside 나 Chrome 을 골라 주세요.');
-  const driver = settings.browser.driver;
-
-  // 내 정보
+  if (settings.browser.driver === 'handoff') throw new Error('Aside 또는 Chrome을 연결해 주세요.');
+  const log = o.log ?? console.log;
   const store = new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema));
-  const check = checkProfile(store.toJSON(), store.schema, store.filesDir);
-  if (check.missing.length) log(`⚠️  내 정보에 비어 있는 필수 항목 ${check.missing.length}개 — 해당 칸은 비워 둡니다: ${check.missing.map((m) => m.where).join(', ')}`);
-  const files = existsSync(store.filesDir) ? readdirSync(store.filesDir).filter((f) => !f.startsWith('.')) : [];
-  const profileDoc = renderProfileForAgent(store.toJSON(), store.schema, { sections: ['basic', 'education', 'career', 'extras', 'target', 'notes'] });
-
-  // ① 준비
+  const profile = store.toJSON();
   const target = await resolveTarget(o.target, settings);
-  log(`① ${target.company || '지원 페이지'} — ${target.link}`);
-  const resumed = !!o.session;
-  const session = o.session ?? (await BrowserSession.open(settings, o.window ? { ...o.window, url: target.link } : undefined));
-  o.onSession?.(session);
+  if (o.role) target.role = o.role.title;
+  const session = o.session ?? await BrowserSession.open(settings, { ...o.window, url: target.link });
+  await o.onSession?.(session);
+  check();
+  const steps = o.steps?.length ? o.steps : ['basic', 'essay'] as ApplyStep[];
   const startedAt = new Date().toISOString();
-  const dir = runDir(`apply-${(target.company || 'site').replace(/[^0-9A-Za-z가-힣]+/g, '_').slice(0, 30)}`);
-  mkdirSync(dir, { recursive: true });
-  const blanks: ApplyReport['blanks'] = [];
-  const notes: string[] = [];
-  const actions: ApplyReport['actions'] = [];
-  let summary = '';
-  let found: { role: string; questions: unknown[] } | null = null;
-  let formInfo: { projects: string[]; documents: string[]; procedure: string[] } | null = null;
-  let bridge: Awaited<ReturnType<typeof startBridge>> | null = null;
-  let agent: AgentResult = { text: '', isError: false, costUsd: 0 };
-  let essay: EssayStepReport | undefined;
-  let pre: PreResearch | null = null;
+  mkdirSync(paths.runs, { recursive: true });
+  const dir = mkdtempSync(runDir(`apply-${(target.company || 'site').replace(/[^0-9A-Za-z가-힣]+/g, '_').slice(0, 30)}`) + '-');
+  const aiDir = mkdtempSync(path.join(dir, '.agent-'));
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  let browser: PlaywrightMcp | undefined;
+  const blanks: ApplyReport['blanks'] = [], notes: string[] = [], actions: ApplyReport['actions'] = [];
+  let formInfo: ApplyReport['formInfo'];
+  const state: AgentTaskState = { questions: [], answers: [], filled: [] };
+  let agent: AgentResult = { text: '', isError: false };
   try {
-    if (!resumed) await session.goto(target.link);
-    // 뒤에서 도는 지원서는 앞으로 끌어오지 않는다 (보고 있던 창을 가로채지 않도록). 사람이 할 일이 생기면 그때 앞으로 온다
-    if (!o.window?.background && !resumed) await session.bringToFront();
-    const targetId = await targetIdOf(session.context, session.page);
-
-    // ①-2 로그인 전에: 지원 페이지와 회사 정보를 정리하고 지원 직무를 고른다 → Notion 절차 / 회사 소개 / 지원 직무
-    if (settings.apply.pre_research && !resumed) {
-      log('① 지원 페이지와 회사 정보를 먼저 정리하고 지원 직무를 고릅니다');
-      try {
-        const pageText = await collectPageText(session.page);
-        pre = await preResearch({
-          settings,
-          company: target.company,
-          link: target.link,
-          notionRoles: target.role,
-          pageText,
-          profileDoc: renderProfileForAgent(store.toJSON(), store.schema, { sections: ['target', 'education', 'career', 'extras'] }),
-          cwd: dir,
-          log,
-          signal: o.signal,
-        });
-        if (pre.roles.length) log(`   📋 모집 직무: ${pre.roles.map((r) => r.title).join(', ')}`);
-        log(pre.chosen ? `   🎯 지원 직무: ${pre.chosen.title}${pre.chosen.reason ? ` — ${pre.chosen.reason}` : ''}` : `   ⚠️  지원 직무를 고르지 못했습니다${pre.note ? `: ${pre.note}` : ''}`);
-        if (pre.procedure.length) log(`   🧭 전형 절차: ${pre.procedure.join(' → ')}${pre.procedure_source === 'web' ? ' (웹에서 찾음)' : ''}`);
-        if (pre.company.summary) log(`   🏢 ${pre.company.summary.slice(0, 120)}`);
-        if (settings.apply.update_notion && target.notionPageId && getSecret('NOTION_TOKEN')) {
-          const sections = await fillPageSections(notionClient(), target.notionPageId, preResearchContent(pre), settings.notion.section_map);
-          const done = sections.filter((x) => x.status === 'filled' || x.status === 'added_heading').map((x) => x.title);
-          const kept = sections.filter((x) => x.status === 'skipped_has_content').map((x) => x.title);
-          log(`   📝 Notion 정리: ${done.join(', ') || '새로 채운 섹션 없음'}${kept.length ? ` (이미 내용이 있어 둠: ${kept.join(', ')})` : ''}`);
-        }
-      } catch (e) {
-        if (o.signal?.aborted) throw e;
-        log(`   ⚠️  미리 정리하지 못했습니다 (계속 진행): ${(e as Error).message.slice(0, 160)}`);
-      }
-    }
-
-    // ② 로그인 대기 — 사람만 하는 일. 로그인 화면일 때만 묻는다 (그 밖에는 AI 가 알아서 지원서 화면까지 들어간다)
-    const wall = settings.apply.login_wait === 'always' ? { needed: true, why: '설정이 "늘 묻기"입니다' } : settings.apply.login_wait === 'never' ? { needed: false, why: '설정이 "묻지 않기"입니다' } : await loginWall(session.page).catch(() => ({ needed: false, why: '' }));
-    if (!o.skipLoginWait && !resumed && !wall.needed) log(`② 로그인은 건너뜁니다 (${wall.why}). 지원서 화면까지는 AI 가 들어갑니다 — 로그인이 필요하면 그때 물어봅니다`);
-    if (!o.skipLoginWait && !resumed && wall.needed) {
-      notify('Auto-Job 지원서', '브라우저에서 로그인/본인인증을 마치고 지원서 입력 화면으로 이동해 주세요');
-      const a = await o.ask(
-        [
-          `② ${wall.why} — 브라우저 창에서 직접 해 주세요: 회원가입·로그인·본인인증·약관 동의까지.`,
-          '   (그 뒤로 지원서 화면까지 들어가는 것은 AI 가 합니다. 직접 가 두셔도 됩니다.)',
-          loginHelp(settings),
-          '   다 되면 알려 주세요 (터미널은 Enter, 대화창은 아무 말이나 / 그만두려면 q 또는 "중지")',
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      );
-      if (/^(q|중지|그만|취소)$/i.test(a.trim())) throw new Error('사용자가 중단했습니다');
-    }
-
-    bridge = await startBridge({
-      ask: async (q) => {
-        notify('Auto-Job 지원서', `확인이 필요합니다 — ${q.slice(0, 60)}`);
-        return o.ask(`❓ ${q}`);
+    if (!o.session) await session.goto(target.link);
+    check();
+    const ref = await session.reference();
+    browser = await PlaywrightMcp.connect(settings, ref.cdpPort, ref.targetId, store.filesDir, path.join(aiDir, 'browser'), o.signal);
+    const handlers = {
+      ask: async (question: string) => { check(); return o.ask(question); },
+      event: async (e: BridgeEvent) => {
+        check();
+        if (e.type === 'blank') { blanks.push({ field: e.field, reason: e.reason }); log(`⬜ ${e.field} — ${e.reason}`); }
+        if (e.type === 'note') { notes.push(e.text); log(`📝 ${e.text}`); }
+        if (e.type === 'action') { actions.push(e); log(`${TOOL_ICON[e.tool] ?? '•'} ${e.message}`); }
+        if (e.type === 'form_info') formInfo = { projects: e.projects, documents: e.documents, procedure: e.procedure };
       },
-      event: (e) => {
-        if (e.type === 'blank') {
-          blanks.push({ field: e.field, reason: e.reason });
-          log(`   ⬜ 비움: ${e.field} — ${e.reason}`);
-        } else if (e.type === 'note') {
-          notes.push(e.text);
-          log(`   📝 ${e.text}`);
-        } else if (e.type === 'action') {
-          actions.push(e);
-          log(`   ${TOOL_ICON[e.tool] ?? '•'} ${e.value ? `${e.value.slice(0, 40)} — ` : ''}${e.message}`);
-        } else if (e.type === 'finish') {
-          summary ||= e.summary;
-        } else if (e.type === 'questions') {
-          found = { role: e.role, questions: e.questions };
-        } else if (e.type === 'form_info') {
-          formInfo = { projects: e.projects, documents: e.documents, procedure: e.procedure };
-        }
-      },
-    });
-    const runAgent = agentFor(settings);
-    const bridgeEnv = { AUTOJOB_BRIDGE_URL: bridge.url, AUTOJOB_BRIDGE_TOKEN: bridge.token };
-    const browserAgent = (prompt: string, system: string) =>
-      runAgent({
-        prompt,
-        systemAppend: system,
-        mcp: {
-          server: 'autojob',
-          command: path.join(ROOT, 'node_modules', '.bin', 'tsx'),
-          args: [path.join(ROOT, 'src', 'mcp', 'browser-server.ts')],
-          env: { AUTOJOB_HOME: DATA_HOME, AUTOJOB_TARGET_ID: targetId, AUTOJOB_BACKGROUND: o.window?.background ? '1' : '0', ...bridgeEnv },
-        },
-        model: modelFor(settings, settings.apply.model),
-        effort: settings.apply.effort || undefined,
-        cwd: dir,
-        signal: o.signal,
-        onEvent: (e) => {
-          if (e.type === 'text') log(`   💭 ${e.text.replace(/\s+/g, ' ').slice(0, 200)}`);
-          if (e.type === 'switch') log(`   🔁 ${e.from}: ${e.reason} → 다음 AI 연결로 이어서 합니다 (이미 넣은 칸은 그대로 둡니다)`);
-        },
-      });
-
-    // ③ 인적사항 입력 — AI
-    if (steps.includes('basic')) {
-      log('③ AI 가 인적사항을 입력합니다 (자기소개서 전까지, 제출 버튼은 막혀 있음)');
-      agent = await browserAgent(buildPrompt(target, profileDoc, files, pre, o.request), buildSystemPrompt(settings));
-    }
-
-    // ④ 자기소개서 — 문항 찾기(AI+브라우저) → 작성(AI+웹) → 입력(코드)
-    if (steps.includes('essay') && !agent.isError) {
-      essay = { questions: [], filled: [] };
-      try {
-        log('④ 자기소개서 문항을 찾습니다');
-        const ex = await browserAgent(
-          `지원 회사: ${target.company || '(모름)'}\n지원 페이지: ${target.link}\n\n이 지원서의 자기소개서 문항을 찾아 set_questions 로 기록하고 finish 하세요. 아무것도 입력하지 마세요.`,
-          readPrompt('essay-extract.md'),
-        );
-        agent.costUsd = (agent.costUsd ?? 0) + (ex.costUsd ?? 0);
-        const got = found as { role: string; questions: unknown[] } | null;
-        essay.questions = normalizeQuestions(got?.questions ?? []);
-        if (!essay.questions.length) throw new Error(ex.isError ? ex.text : '자기소개서 문항을 찾지 못했습니다');
-        log(`   문항 ${essay.questions.length}개: ${essay.questions.map((q) => `${q.id}번${q.maxChars ? `(${q.maxChars}자)` : ''}`).join(', ')}`);
-
-        essay.result = await writeEssays(
-          {
-            company: target.company,
-            role: got?.role || pre?.chosen?.title || target.role || '',
-            postingUrl: target.link,
-            questions: essay.questions,
-            known: pre ? preResearchDoc(pre) : undefined,
-            request: o.request,
-          },
-          { settings, profile: store.toJSON(), schema: store.schema, cwd: dir, log, signal: o.signal },
-        );
-        essay.file = path.join(dir, 'essays.md');
-        writeFileSync(essay.file, formatEssays(essay.result));
-
-        log('   ⌨️  답변을 입력합니다');
-        const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir, { background: o.window?.background });
-        try {
-          for (const q of essay.questions) {
-            const text = essay.result.answers.find((a) => a.id === q.id)?.text.trim() ?? '';
-            if (!q.ref || !text) {
-              essay.filled.push({ id: q.id, ok: false, message: !q.ref ? '입력칸을 찾지 못함' : '답변 없음' });
-              continue;
-            }
-            // 사용자가 다시 써 달라고 한 경우에만 이미 있는 답변을 지우고 새로 넣는다
-            const msg = await tools.fill(q.ref, text, { replace: !!o.request }).catch((e) => `실패: ${(e as Error).message}`);
-            const now = await tools.valueOf(q.ref).catch(() => '');
-            const ok = now.trim() === text;
-            essay.filled.push({ id: q.id, ok, message: ok ? `입력함 (${[...now].length}자)` : now.trim() ? `${msg}${now.trim() !== text ? ' — 들어간 글이 답변과 다릅니다 (사이트가 자르거나 이미 값이 있었음)' : ''}` : msg });
-            log(`   ${ok ? '✅' : '⚠️ '} ${q.id}번 ${essay.filled.at(-1)!.message}`);
-          }
-        } finally {
-          await tools.close();
-        }
-      } catch (e) {
-        essay.error = (e as Error).message;
-        log(`   ❌ 자기소개서: ${essay.error}`);
-      }
-    }
-
-    // ⑤ 임시저장 — 코드 (설정의 저장 버튼 문구만, 제출 가드 적용)
-    let save: ApplyReport['save'];
-    if (settings.apply.save_draft && !agent.isError) {
-      log('⑤ 임시저장');
-      const tools = await ApplyTools.connect(settings, settings.browser[driver].cdp_port, targetId, store.filesDir, { background: o.window?.background });
-      try {
-        save = await tools.saveDraft(settings.apply.save_buttons);
-      } catch (e) {
-        save = { ok: false, message: (e as Error).message, dialogs: [] };
-      } finally {
-        await tools.close();
-      }
-      log(`   ${save.ok ? '💾' : '⚠️ '} ${save.message}${save.dialogs.length ? ` / 알림: ${save.dialogs.join(' / ')}` : ''}`);
-    }
-
-    // 결과 화면을 앞으로 (뒤에서 도는 지원서는 보던 창을 가로채지 않고, 대화방의 "창 보기"로 열어 본다)
-    if (o.window?.background) log('   🪟 다 됐습니다 — 대화방의 "창 보기"로 지원서 창을 열어 검토해 주세요');
-    else await session.show();
-    let screenshot: string | undefined = path.join(dir, 'screenshot.png');
-    await session.screenshot(screenshot).catch(() => (screenshot = undefined));
-
-    // ⑥ Notion 정리 — 본문 섹션 채우기, 제출 상태 변경
-    let notionReport: ApplyReport['notion'];
-    if (settings.apply.update_notion && target.notionPageId && getSecret('NOTION_TOKEN')) {
-      log('⑥ Notion 페이지 정리');
-      notionReport = { sections: [] };
-      try {
-        const client = notionClient();
-        const content = buildPageContent({ essay, formInfo: formInfo as typeof formInfo, role: (found as { role: string } | null)?.role || pre?.chosen?.title || target.role, uploads: actions.filter((a) => a.tool === 'upload' && a.ok).map((a) => a.value ?? '') });
-        notionReport.sections = await fillPageSections(client, target.notionPageId, content, settings.notion.section_map);
-        for (const r of notionReport.sections) if (r.status !== 'no_data') log(`   ${r.status === 'skipped_has_content' ? '⏭️  이미 내용이 있어 둠' : '📝 채움'}: ${r.title}`);
-        if (essay?.error || (steps.includes('basic') && agent.isError)) {
-          notionReport.status = '끝까지 마치지 못해 제출 상태는 바꾸지 않았습니다';
-        } else {
-          notionReport.status = await setSubmitStatus(client, target.notionPageId, settings);
-        }
-        log(`   ${notionReport.status}`);
-      } catch (e) {
-        notionReport.error = (e as Error).message;
-        log(`   ❌ Notion: ${notionReport.error}`);
-      }
-    }
-    const report: ApplyReport = {
-      company: target.company,
-      link: target.link,
-      notionUrl: target.notionUrl,
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      steps,
-      summary: summary || (agent.isError ? `AI 가 끝까지 마치지 못했습니다: ${agent.text}` : agent.text),
-      blanks,
-      notes,
-      actions,
-      agent,
-      completed: steps.includes('basic') ? !!summary && !agent.isError : true,
-      essay,
-      formInfo: formInfo as typeof formInfo,
-      role: (found as { role: string } | null)?.role || target.role,
-      save,
-      notion: notionReport,
-      dir,
-      screenshot,
     };
-    writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 1));
-    writeFileSync(path.join(dir, 'report.md'), formatApplyReport(report));
-    const essayOk = !essay || (!essay.error && essay.filled.every((f) => f.ok));
-    notify('Auto-Job 지원서', report.completed && essayOk ? '지원서 작성을 마쳤습니다 — 검토해 주세요' : '끝까지 마치지 못한 부분이 있습니다 — 리포트를 확인해 주세요');
+    const token = target.notionPageId ? getSecret('NOTION_TOKEN') : undefined;
+    state.notion = { available: !!(target.notionPageId && token), pageUrl: target.notionUrl, verified: false,
+      ...(!target.notionPageId ? { error: '이 작업에 연결된 Notion 공고 페이지가 없습니다' } : !token ? { error: 'Notion 연결 토큰이 없습니다' } : {}) };
+    const notion = target.notionPageId && token ? notionToolset({ client: new NotionClient(token, fetch, o.signal), pageId: target.notionPageId, pageUrl: target.notionUrl, state: state.notion, settings, signal: o.signal, onChange: o.onNotion }) : undefined;
+    const tools = applicationToolset({ notion, notionRequired: settings.apply.update_notion && !!target.notionPageId, browser: conversationTools(browser, handlers), tools: browser, settings, profile, state, signal: o.signal, request: o.request ?? '', onRole: o.onRole,
+      context: { ...o.context, target, role: o.role, original_scope: steps, latest_request: o.request || `이 지원서의 ${steps.includes('basic') && steps.includes('essay') ? '기본정보와 자기소개서' : steps.includes('essay') ? '자기소개서' : '기본정보'}를 작성해 주세요.`,
+        profile: renderProfileForAgent(profile, store.schema), files: existsSync(store.filesDir) ? readdirSync(store.filesDir).filter(f => !f.startsWith('.')).map(f => path.join(store.filesDir, f)) : [] } });
+    bridge = await startBridge({ ...handlers, tools, signal: o.signal });
+    log('AI가 대화와 자료, 실제 화면을 확인해 작업합니다');
+    try {
+      agent = await agentFor(settings)({
+        prompt: 'context를 읽고 최신 사용자 요청을 수행하세요. 화면과 자료를 확인하고 스스로 필요한 도구를 사용하세요.',
+        systemAppend: buildSystemPrompt(settings), tools: ['WebSearch', 'WebFetch'], isolated: true,
+        mcp: { server: 'autojob', command: process.execPath, args: [path.join(ROOT, 'node_modules/tsx/dist/cli.mjs'), path.join(ROOT, 'src/mcp/browser-server.ts')], env: { AUTOJOB_BRIDGE_URL: bridge.url, AUTOJOB_BRIDGE_TOKEN: bridge.token } },
+        model: modelFor(settings, settings.apply.model), effort: settings.apply.effort || undefined,
+        cwd: aiDir, signal: o.signal,
+        onEvent: e => { if (e.type === 'text') log(`💭 ${e.text}`); if (e.type === 'tool') log(`도구: ${e.name}`); if (e.type === 'switch') log(`AI 연결 변경: ${e.from} — ${e.reason}`); },
+      });
+    } catch (e) { check(); agent = { text: (e as Error).message, isError: true }; }
+    check();
+    const completed = !agent.isError && state.finish?.status === 'completed';
+    const outcome = agent.isError ? 'incomplete' : state.finish?.status ?? 'incomplete';
+    const summary = state.finish?.summary || agent.text || '결과를 확인하지 못했습니다';
+    const remaining = state.finish?.remaining ?? (agent.isError ? [agent.text] : ['AI가 완료 상태를 기록하지 않았습니다']);
+    const essay: EssayStepReport | undefined = state.questions.length ? { questions: state.questions, filled: state.filled,
+      result: { research: state.research, answers: state.answers, strategy: [], checks: state.questions.map(q => checkEssay(q, state.answers.find(a => a.id === q.id) ?? { id: q.id, text: '' }, settings.essay, blindTermsFromProfile(profile))), costUsd: 0, input: { company: target.company, role: state.role?.title || target.role || '', questions: state.questions }, reviews: [], rounds: 0, reviewedBeforeLastRevision: false, ok: state.filled.every(f => f.ok) } } : undefined;
+    const report: ApplyReport = { company: target.company, link: target.link, notionUrl: target.notionUrl, startedAt, finishedAt: new Date().toISOString(), steps,
+      summary, blanks: state.blanks ?? blanks, blanksReviewed: state.blanks !== undefined, notes: [...notes, ...remaining], actions, agent, completed, outcome, remaining, essay, formInfo, role: state.role?.title || o.role?.title || target.role, save: state.save, notion: state.notion, dir };
+    if (essay?.result?.answers.length) { essay.file = path.join(dir, 'essays.md'); writeFileSync(essay.file, formatEssays(essay.result), { mode: 0o600 }); }
+    if (outcome !== 'answered') {
+      report.screenshot = path.join(dir, 'screenshot.png');
+      await browser.screenshot().then(data => writeFileSync(report.screenshot!, data, { mode: 0o600 })).catch(() => { report.screenshot = undefined; });
+      check();
+    }
+    writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 1), { mode: 0o600 });
+    writeFileSync(path.join(dir, 'report.md'), formatApplyReport(report), { mode: 0o600 });
     return report;
   } finally {
-    bridge?.server.close();
-    if (!o.keepSession) await session.detach(); // 창은 사용자가 검토하도록 그대로 둔다
+    await bridge?.close(); await browser?.close(); rmSync(aiDir, { recursive: true, force: true });
+    if (!o.keepSession) await session.detach();
   }
 }
 
 export function formatApplyReport(r: ApplyReport): string {
-  const filled = r.actions.filter((a) => a.ok && ['fill', 'select', 'check', 'upload'].includes(a.tool)).length;
+  if (r.outcome === 'answered') return `# 대화 답변 — ${r.company || r.link}\n\n${r.summary}`;
+  const filled = r.actions.filter((a) => a.ok && ['fill', 'select', 'check', 'upload', 'browser_type', 'browser_fill_form', 'browser_select_option', 'browser_file_upload'].includes(a.tool)).length;
   const refused = r.actions.filter((a) => !a.ok);
   const e = r.essay;
+  const essays = e?.questions.filter(q => !q.kind || q.kind === 'essay') ?? [];
+  const otherFields = e?.questions.filter(q => q.kind && q.kind !== 'essay') ?? [];
+  const filledCount = (qs: EssayQuestion[]) => qs.filter(q => e?.filled.some(f => f.id === q.id && f.ok)).length;
   const lines: (string | null)[] = [
     `# 지원서 작성 — ${r.company || r.link}`,
     '',
-    r.completed ? null : '> ⚠️ AI 가 인적사항 입력을 끝까지 마치지 못했습니다. 아래 요약을 보고 빈 칸을 직접 확인해 주세요.',
+    r.completed ? null : '> ⚠️ 요청한 작업이 미완료입니다. 아래 남은 일과 저장 상태를 확인해 주세요.',
     r.completed ? null : '',
     `- 지원 페이지: ${r.link}`,
+    ...(r.remaining?.length ? r.remaining.map(x => `- 남은 일: ${x}`) : []),
     r.notionUrl ? `- Notion: ${r.notionUrl}` : null,
-    r.steps.includes('basic') ? `- 인적사항 입력한 칸: ${filled}개` : null,
-    e ? `- 자기소개서: ${e.error ? `실패 — ${e.error}` : `${e.filled.filter((f) => f.ok).length}/${e.questions.length}문항 입력`}` : null,
+    r.steps.includes('basic') ? `- 브라우저 입력 작업: ${filled}회 (여러 칸 일괄 입력 포함)` : null,
+    e ? `- 자기소개서: ${e.error ? `실패 — ${e.error}` : essays.length ? `${filledCount(essays)}/${essays.length}문항 입력` : '기록된 실제 자소서 문항 없음'}` : null,
+    otherFields.length ? `- 안내 확인·단답형: ${filledCount(otherFields)}/${otherFields.length}항목 입력` : null,
     r.agent.costUsd || e?.result?.costUsd ? `- AI 사용량: $${((r.agent.costUsd ?? 0) + (e?.result?.costUsd ?? 0)).toFixed(3)}` : null,
-    e?.file ? `- 자기소개서 전문: ${e.file}` : null,
-    r.save ? `- 임시저장: ${r.save.ok ? `눌렀습니다 ("${r.save.label}")` : r.save.message}${r.save.dialogs.length ? ` — 알림: ${r.save.dialogs.join(' / ')}` : ''}` : null,
-    r.notion ? `- Notion: ${r.notion.error ? `실패 — ${r.notion.error}` : `${r.notion.sections.filter((x) => x.status === 'filled' || x.status === 'added_heading').map((x) => x.title).join(', ') || '채운 섹션 없음'}${r.notion.sections.some((x) => x.status === 'skipped_has_content') ? ` (이미 내용이 있어 둔 섹션: ${r.notion.sections.filter((x) => x.status === 'skipped_has_content').map((x) => x.title).join(', ')})` : ''} · ${r.notion.status ?? ''}`}` : null,
+    e?.file ? `- 문항·입력 내용: ${e.file}` : null,
+    r.save ? `- 임시저장: ${r.save.ok ? `저장 성공 확인 — ${r.save.message}` : r.save.message}${r.save.dialogs.length ? ` — 알림: ${r.save.dialogs.join(' / ')}` : ''}` : null,
+    r.notion ? `- Notion: ${r.notion.verified ? `반영 확인 — ${r.notion.summary ?? ''}` : r.notion.error ?? '정리 완료 미확인'}` : null,
     r.screenshot ? `- 화면: ${r.screenshot}` : null,
-    ...(r.steps.includes('basic') ? ['', '## 인적사항 요약', r.summary || '(없음)'] : []),
+    '', '## 작업 요약', r.summary || '(없음)',
     '',
-    `## 비워둔 Value 값 (${r.blanks.length})`,
-    ...(r.blanks.length ? r.blanks.map((b) => `- ${b.field}: ${b.reason}`) : ['- 없음']),
+    `## 미입력 항목${r.blanks.length || r.blanksReviewed ? ` (${r.blanks.length})` : ''}`,
+    ...(r.blanks.length ? r.blanks.map((b) => `- ${b.field}: ${b.reason}`) : [r.blanksReviewed ? '- 확인된 미입력 항목 없음' : '- 미입력 항목 목록이 기록되지 않았습니다. 작업 요약과 남은 일을 확인해 주세요.']),
     '',
     `## 참고사항 (${r.notes.length})`,
     ...(r.notes.length ? r.notes.map((n) => `- ${n}`) : ['- 없음']),
     ...(e && e.questions.length
       ? [
           '',
-          '## 자기소개서',
+          '## 문항별 입력 결과',
           ...e.questions.map((q) => {
             const c = e.result?.checks.find((x) => x.id === q.id);
             const f = e.filled.find((x) => x.id === q.id);
             const problems = [...(c?.issues ?? []).map((i) => `❌ ${i}`), ...(c?.warnings ?? []).map((w) => `⚠️ ${w}`)];
-            return `- ${q.id}. ${q.question.slice(0, 60)}${q.question.length > 60 ? '…' : ''} — ${f ? f.message : '입력 안 함'}${problems.length ? `\n  ${problems.join('\n  ')}` : ''}`;
+            return `- ${q.id}. ${q.kind === 'notice' ? '[안내 확인] ' : q.kind === 'short_answer' ? '[단답형] ' : ''}${q.question.slice(0, 60)}${q.question.length > 60 ? '…' : ''} — ${f ? f.message : '입력 안 함'}${problems.length ? `\n  ${problems.join('\n  ')}` : ''}`;
           }),
         ]
       : []),
     ...(refused.length ? ['', `## 막히거나 건너뛴 동작 (${refused.length})`, ...refused.map((a) => `- ${a.tool}: ${a.message}`)] : []),
     '',
-    '> 제출은 하지 않았습니다. 브라우저에서 내용을 확인한 뒤 직접 저장/제출해 주세요.',
+    r.save?.ok ? '> 임시저장 성공을 확인했습니다. 브라우저에서 내용을 검토한 뒤 최종 제출은 직접 해 주세요.' : '> 최종 제출은 하지 않았습니다. 저장 상태와 남은 일을 확인해 주세요.',
   ];
   return lines.filter((l): l is string => l !== null).join('\n');
 }

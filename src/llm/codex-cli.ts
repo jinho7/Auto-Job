@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { LIMIT_SIGNAL, type AgentResult, type AgentRun } from './claude-cli';
+import { waitForAgentExit } from './process';
 
 const WEB = new Set(['WebSearch', 'WebFetch']);
 /** TOML 값: 문자열/배열/인라인 표. JSON 문자열 표기는 TOML 기본 문자열로도 유효하다 */
@@ -13,13 +14,21 @@ const toml = (v: unknown): string =>
 
 export function codexArgs(o: AgentRun, lastFile: string): string[] {
   const args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '--cd', o.cwd, '--output-last-message', lastFile];
+  if (o.isolated) {
+    args.push('--ephemeral', '--ignore-user-config', '--ignore-rules', '-c', 'approval_policy="never"', '-c', `web_search=${toml((o.tools ?? []).some(t => WEB.has(t)) ? 'live' : 'disabled')}`);
+    for (const feature of ['shell_tool', 'unified_exec', 'apply_patch_freeform', 'plugins', 'apps', 'multi_agent', 'browser_use', 'browser_use_external', 'browser_use_full_cdp_access', 'computer_use', 'hooks', 'memories', 'workspace_dependencies', 'in_app_browser']) args.push('--disable', feature);
+  }
   if (o.model) args.push('--model', o.model);
-  // Codex 의 추론 단계는 minimal/low/medium/high 까지라 더 높은 단계는 high 로
-  if (o.effort) args.push('-c', `model_reasoning_effort=${toml(o.effort === 'xhigh' || o.effort === 'max' ? 'high' : o.effort)}`);
+  // 사용자가 고른 추론 수준을 그대로 전달한다. 지원 여부는 선택한 모델/CLI가 판단한다.
+  if (o.effort) args.push('-c', `model_reasoning_effort=${toml(o.effort)}`);
   if ((o.tools ?? []).some((t) => WEB.has(t))) args.push('-c', 'tools.web_search=true');
   if (o.mcp) {
     const k = `mcp_servers.${o.mcp.server}`;
     args.push('-c', `${k}.command=${toml(o.mcp.command)}`, '-c', `${k}.args=${toml(o.mcp.args)}`, '-c', `${k}.env=${toml(o.mcp.env)}`, '-c', `${k}.tool_timeout_sec=1800`);
+    // codex exec 는 승인 정책이 never 로 고정이라, 이 서버의 도구를 미리 승인해 두지 않으면
+    // 도구 호출이 전부 "승인이 필요하지만 승인 정책이 never" 로 거절된다 (지원서를 한 칸도 못 채운다)
+    args.push('-c', `${k}.default_tools_approval_mode="approve"`);
+    if (o.isolated) args.push('-c', `${k}.required=true`);
   }
   args.push('-'); // 작업 내용은 표준 입력으로
   return args;
@@ -30,8 +39,11 @@ export function codexPrompt(o: AgentRun): string {
 }
 
 export async function runCodexAgent(o: AgentRun, bin = 'codex'): Promise<AgentResult> {
+  o.signal?.throwIfAborted();
   const lastFile = path.join(o.cwd, `codex-last-${Date.now()}.txt`);
-  const child = spawn(bin, codexArgs(o, lastFile), { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ['pipe', 'pipe', 'pipe'], signal: o.signal });
+  const child = spawn(bin, codexArgs(o, lastFile), { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = waitForAgentExit(child, o.signal);
+  child.stdin.on('error', () => {});
   child.stdin.end(codexPrompt(o));
   let buf = '';
   let stderr = '';
@@ -77,11 +89,9 @@ export async function runCodexAgent(o: AgentRun, bin = 'codex'): Promise<AgentRe
       } else if (msg.type === 'turn.failed' || msg.type === 'error') failure = String(msg.error?.message ?? msg.message ?? '실패');
     }
   });
-  const code: number = await new Promise((resolve, reject) => {
-    child.on('error', (e) => reject((e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('codex 명령을 찾지 못했습니다. Codex CLI 를 설치하고 로그인해 주세요 (npm i -g @openai/codex, codex login).') : e));
-    child.on('close', resolve);
-  });
-  if (stall) clearTimeout(stall);
+  const code = await exited.catch(e => {
+    throw (e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('codex 명령을 찾지 못했습니다. Codex CLI 를 설치하고 로그인해 주세요 (npm i -g @openai/codex, codex login).') : e;
+  }).finally(() => { if (stall) clearTimeout(stall); });
   const text = existsSync(lastFile) ? readFileSync(lastFile, 'utf8') : lastMessage;
   const isError = !!failure || (code !== 0 && !text);
   const result = { text: isError ? `Codex 실행 실패: ${failure || stderr.slice(-400) || `코드 ${code}`}` : text, isError };

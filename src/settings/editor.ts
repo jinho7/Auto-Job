@@ -44,7 +44,7 @@ export class SettingsEditor {
 
   async run(): Promise<void> {
     const menu: [string, () => Promise<void>][] = [
-      ['검색 키워드', () => this.list('collect.keywords', '검색 키워드')],
+      ['검색 키워드 (선택)', () => this.list('collect.keywords', '추가 검색어 (비우면 내 정보·자료 폴더에서 AI가 정합니다)')],
       ['수집 사이트', () => this.sources()],
       ['고용형태', () => this.employment()],
       ['기업 구분 (포함 / 작성중 표시)', () => this.companyTypes()],
@@ -58,7 +58,7 @@ export class SettingsEditor {
     for (;;) {
       const s = this.store.settings;
       const status: Record<string, string> = {
-        '검색 키워드': `${s.collect.keywords.length}개`,
+        '검색 키워드 (선택)': `추가 ${s.collect.keywords.length}개 · 기본은 내 자료 기반 검색`,
         '수집 사이트': Object.entries(s.collect.sources).filter(([, v]) => v).map(([k]) => SOURCE_LABELS[k] ?? k).join(', ') || '없음',
         고용형태: s.collect.employment_types.join(', ') || '없음',
         Notion: s.notion.database_id ? '연결할 DB 지정됨' : 'DB 미지정',
@@ -77,7 +77,7 @@ export class SettingsEditor {
   async wizard(): Promise<void> {
     const steps: [string, string, () => Promise<void>][] = [
       ['1/5', 'AI 연결 (공고 판단, 지원서 입력, 자기소개서에 쓸 AI)', () => this.llm()],
-      ['2/5', '검색 키워드', () => this.list('collect.keywords', '검색 키워드')],
+      ['2/5', '검색 키워드 (선택: 기본은 내 정보·자료 폴더 기반 검색)', () => this.list('collect.keywords', '추가 검색어')],
       ['3/5', '수집 사이트', () => this.sources()],
       ['4/5', 'Notion (공고를 정리할 DB)', () => this.notion()],
       ['5/5', '브라우저', () => this.browser()],

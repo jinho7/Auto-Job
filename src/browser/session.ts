@@ -1,11 +1,32 @@
 // AI와 파이프라인이 브라우저를 다루는 유일한 통로.
 // 뒤로가기, 새로고침, 탭 닫기, 강제 덮어쓰기 같은 위험한 조작은 의도적으로 제공하지 않는다.
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type { Browser, BrowserContext, Dialog, Locator, Page } from 'playwright-core';
-import type { GuardConfig, Settings } from '../config';
+import type { CdpBrowserConfig, GuardConfig, Settings } from '../config';
 import { connectCdp } from './cdp';
 import { checkLabel, GuardBlockedError, installGuard, markAgentAction, normalizeLabel } from './guard';
 
 export type FillResult = 'filled' | 'skipped-prefilled';
+export type SessionRef = { targetId: string; cdpPort: number; tabKey?: string; profileDir?: string };
+const TAB_KEY = '__autojob_owned_tab_v1';
+
+export class MissingApplicationTab extends Error {
+  constructor() { super('기존 지원서 탭이 사라졌습니다. 다른 탭을 대신 사용하지 않습니다.'); }
+}
+
+/** A persisted task uses its original browser profile, even if the default driver changed. */
+export function configForSession(settings: Settings, ref: SessionRef): CdpBrowserConfig {
+  const candidates = [settings.browser.aside, settings.browser.chrome].filter(c => c.cdp_port === ref.cdpPort && (!ref.profileDir || path.resolve(c.profile_dir) === path.resolve(ref.profileDir)));
+  if (candidates.length !== 1) throw new Error('이 지원서의 브라우저 연결 설정이 바뀌었습니다. 설정에서 기존 포트와 자동화 프로필을 확인해 주세요.');
+  return candidates[0];
+}
+
+async function markOwnedTab(page: Page, tabKey: string): Promise<void> {
+  const script = `try { sessionStorage.setItem(${JSON.stringify(TAB_KEY)}, ${JSON.stringify(tabKey)}); } catch {}`;
+  await page.addInitScript(script);
+  await page.evaluate(script).catch(() => {});
+}
 
 export class BrowserSession {
   private armed = false;
@@ -23,6 +44,9 @@ export class BrowserSession {
     readonly mark: string = '',
     /** 뒤에서 도는 지원서인가 (그렇다면 스스로 창을 앞으로 올리지 않는다) */
     private readonly background = false,
+    private readonly cdpPort = 0,
+    private readonly tabKey: string = randomUUID(),
+    private readonly profileDir?: string,
   ) {}
 
   static async open(settings: Settings, opts: { newWindow?: boolean; background?: boolean; url?: string } = {}): Promise<BrowserSession> {
@@ -37,13 +61,47 @@ export class BrowserSession {
     const mark = n ? `[지원 ${n}]` : '';
     if (mark) await markTitle(page, mark);
     const tabGuard = await installGuard(page, guard);
-    const session = new BrowserSession(browser, context, guard, page, tabGuard, mark, !!opts.background);
+    const tabKey = randomUUID();
+    await markOwnedTab(page, tabKey);
+    const session = new BrowserSession(browser, context, guard, page, tabGuard, mark, !!opts.background, settings.browser[driver].cdp_port, tabKey, settings.browser[driver].profile_dir);
     // 컨텍스트에 리스너가 있으면 Playwright 가 다른 탭의 대화상자를 자동으로 닫지 않는다. 내 탭 것만 처리한다.
     context.on('dialog', (d) => {
       if (tabGuard.owns(d.page())) void session.onDialog(d);
     });
     page.on('popup', (p) => session.events.push(`새 창: ${p.url() || '(로딩 중)'}`));
     return session;
+  }
+
+  async reference(): Promise<SessionRef> {
+    const cdp = await this.context.newCDPSession(this.page);
+    try {
+      const { targetInfo } = await cdp.send('Target.getTargetInfo');
+      return { targetId: targetInfo.targetId, cdpPort: this.cdpPort, tabKey: this.tabKey, profileDir: this.profileDir };
+    } finally { await cdp.detach(); }
+  }
+
+  /** Reconnect to the exact target or its unique persisted ownership marker. Never match by URL. */
+  static async attach(settings: Settings, ref: SessionRef): Promise<BrowserSession> {
+    const cfg = configForSession(settings, ref);
+    const browser = await connectCdp(cfg);
+    try {
+      let exact: Page | undefined;
+      const marked: Page[] = [];
+      for (const context of browser.contexts()) for (const page of context.pages()) {
+        const cdp = await context.newCDPSession(page);
+        const info = await cdp.send('Target.getTargetInfo').finally(() => cdp.detach());
+        if (info.targetInfo.targetId === ref.targetId) { exact = page; break; }
+        if (ref.tabKey && await page.evaluate(key => sessionStorage.getItem(key), TAB_KEY).catch(() => null) === ref.tabKey) marked.push(page);
+      }
+      const page = exact ?? (marked.length === 1 ? marked[0] : undefined);
+      if (!page) throw new MissingApplicationTab();
+      const context = page.context(), tabKey = ref.tabKey || randomUUID();
+      await markOwnedTab(page, tabKey);
+      const tabGuard = await installGuard(page, settings.browser.guard);
+      const session = new BrowserSession(browser, context, settings.browser.guard, page, tabGuard, '', true, ref.cdpPort, tabKey, cfg.profile_dir);
+      context.on('dialog', d => { if (tabGuard.owns(d.page())) void session.onDialog(d); });
+      return session;
+    } catch (e) { await browser.close(); throw e; }
   }
 
   /** 지원서 입력 단계 진입. 이후로는 block_when_armed(지원하기 등)도 차단한다. */
@@ -55,6 +113,8 @@ export class BrowserSession {
   get isArmed(): boolean {
     return this.armed;
   }
+
+  get connected(): boolean { return this.browser.isConnected() && !this.page.isClosed(); }
 
   async goto(url: string): Promise<void> {
     await this.page.goto(url, { waitUntil: 'domcontentloaded' });

@@ -16,6 +16,7 @@ import { verifyLink } from '../jobs/link';
 import type { JobPosting } from '../jobs/model';
 import { matchRoles } from '../jobs/roles';
 import { SeenStore } from '../jobs/seen';
+import { prepareSearch, type SearchPlan } from '../jobs/search-plan';
 import type { AddResult } from '../notion/jobs';
 
 export type Outcome =
@@ -68,6 +69,7 @@ export type ReportItem = {
 };
 
 export type CollectReport = {
+  searchPlan?: SearchPlan;
   startedAt: string;
   finishedAt: string;
   dryRun: boolean;
@@ -89,6 +91,8 @@ export type NotionSink = {
 
 export type CollectOptions = {
   settings: Settings;
+  /** Production entrypoints always supply the current user's profile. */
+  profile?: Record<string, unknown>;
   http: PoliteHttp;
   /** 수집기용 브라우저 탭 */
   browserPage: () => Promise<Page>;
@@ -165,9 +169,11 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
   const log = o.log ?? (() => {});
   const now = o.now ?? new Date();
   const startedAt = now.toISOString();
-  const s = o.settings;
+  const searchPlan = o.profile ? await prepareSearch(o.settings, o.profile, { cwd: o.cwd ?? tmpdir(), runAgent: o.runAgent, log }) : undefined;
+  // Derived queries apply only to this run. Never replace the user's saved inputs.
+  const s = searchPlan ? { ...o.settings, collect: { ...o.settings.collect, keywords: searchPlan.keywords } } : o.settings;
   const items: ReportItem[] = [];
-  const ai: CollectReport['ai'] = { linkSearched: 0, linkFound: 0, rolesTagged: 0, costUsd: 0, errors: [] };
+  const ai: CollectReport['ai'] = { linkSearched: 0, linkFound: 0, rolesTagged: 0, costUsd: searchPlan?.costUsd ?? 0, errors: [] };
   const add = (r: RawPosting, outcome: Outcome, extra: Partial<ReportItem> = {}) =>
     items.push({ outcome, source: r.source, sourceUrl: r.sourceUrl, company: cleanCompanyName(r.company), title: r.title, deadline: deadlineText(r.deadline), ...extra });
   const seenKey = (r: RawPosting) => SeenStore.key(r.source, r.sourceId);
@@ -386,18 +392,28 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
 
   const counts: CollectReport['counts'] = {};
   for (const it of items) counts[it.outcome] = (counts[it.outcome] ?? 0) + 1;
-  return { startedAt, finishedAt: new Date().toISOString(), dryRun: o.dryRun, notion: o.notion ? 'connected' : 'not_configured', sources, counts, ai, items };
+  return { startedAt, finishedAt: new Date().toISOString(), dryRun: o.dryRun, notion: o.notion ? 'connected' : 'not_configured', sources, counts, ai, items, ...(searchPlan ? { searchPlan } : {}) };
 }
 
 /** 사람이 읽는 리포트 */
 export function formatReport(r: CollectReport, opts: { verbose?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push(`공고 수집 ${r.dryRun ? '(미리보기 — Notion 에 쓰지 않음)' : ''}`.trim());
+  if (r.searchPlan) {
+    const p = r.searchPlan;
+    lines.push('', p.mode === 'profile' ? `내 자료 기반 검색 (연결 파일 ${p.filesRead}개 분석)` : '직접 지정한 조건으로 검색', `  검색어: ${p.keywords.join(', ') || '사이트 직무 분류 사용'}`);
+    for (const d of p.directions) {
+      lines.push(`  ${d.role}: ${d.reason}`, `    검색어: ${d.keywords.join(', ')}`);
+      for (const e of p.evidence.filter((e) => d.evidence_ids.includes(e.id))) lines.push(`    근거: ${e.source} — ${e.fact}`);
+    }
+    for (const w of p.warnings) lines.push(`  ⚠️ ${w}`);
+    lines.push('');
+  }
   for (const s of r.sources) lines.push(`  ${s.error ? '❌' : '✅'} ${s.label}: ${s.error ? s.error : `${s.count}건`}`);
   lines.push('', '결과');
   for (const [k, v] of Object.entries(r.counts)) lines.push(`  ${OUTCOME_LABEL[k as Outcome]}: ${v}`);
   const a = r.ai;
-  if (a && (a.linkSearched || a.rolesTagged || a.errors.length)) {
+  if (a && (a.linkSearched || a.rolesTagged || a.errors.length || a.costUsd)) {
     lines.push('', 'AI');
     if (a.linkSearched) lines.push(`  지원 페이지 검색: ${a.linkSearched}건 중 ${a.linkFound}건 찾음`);
     if (a.rolesTagged) lines.push(`  직무 태그를 AI 가 바꾼 공고: ${a.rolesTagged}건`);

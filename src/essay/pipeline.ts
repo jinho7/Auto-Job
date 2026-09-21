@@ -224,7 +224,8 @@ export async function writeEssays(input: EssayInput, d: EssayDeps): Promise<Essa
 }
 
 export function formatEssays(r: EssayResult): string {
-  const out: string[] = [`# 자기소개서 — ${[r.input.company, r.input.role].filter(Boolean).join(' ') || '(회사 모름)'}`, ''];
+  const hasOtherFields = r.input.questions.some(q => q.kind && q.kind !== 'essay');
+  const out: string[] = [`# ${hasOtherFields ? '지원서 문항과 입력 내용' : '자기소개서'} — ${[r.input.company, r.input.role].filter(Boolean).join(' ') || '(회사 모름)'}`, ''];
   if (r.materials?.items.length) {
     out.push('## 소재 폴더에서 찾은 소재', ...r.materials.items.map((m) => `- **${m.title}**${m.period ? ` (${m.period})` : ''}${m.source ? ` — ${m.source}` : ''}: ${m.facts.replace(/\n/g, ' ')}`));
     if (r.materials.skipped.length) out.push(`- 읽지 못한 파일: ${r.materials.skipped.join(', ')}`);
@@ -242,7 +243,7 @@ export function formatEssays(r: EssayResult): string {
     const a = r.answers.find((x) => x.id === q.id);
     const c = r.checks.find((x) => x.id === q.id);
     const s = r.strategy.find((x) => x.id === q.id);
-    out.push(`## ${q.id}. ${q.question}`);
+    out.push(`## ${q.id}. ${q.kind === 'notice' ? '[안내 확인] ' : q.kind === 'short_answer' ? '[단답형] ' : ''}${q.question}`);
     out.push(`> ${c ? `${c.length}${UNIT_LABEL[q.unit]}` : ''}${q.maxChars ? ` / 최대 ${q.maxChars}` : ''}${s ? ` · 소재: ${s.stories.join(', ')}` : ''}`);
     for (const i of c?.issues ?? []) out.push(`> ❌ ${i}`);
     for (const w of c?.warnings ?? []) out.push(`> ⚠️ ${w}`);

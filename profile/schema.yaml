@@ -247,7 +247,7 @@ sections:
       folders:
         label: 소재 폴더
         type: list
-        hint: 경험을 정리해 둔 내 컴퓨터의 폴더 (md, txt, pdf …). 자소서를 쓸 때 AI 가 이 폴더의 파일만 읽고 문항에 맞는 소재를 찾는다
+        hint: 경험을 정리해 둔 내 컴퓨터의 폴더 (md, txt, pdf …). 공고 검색 때 내 정보와 함께 읽어 직무와 검색어를 정하고, 자소서를 쓸 때 문항에 맞는 소재를 찾는다
         item:
           path: { label: 폴더 위치, required: true, example: /Users/me/Documents/취업/경험정리 }
           note: { label: 설명, example: 프로젝트 회고, 동아리 활동 정리 }

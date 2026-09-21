@@ -43,6 +43,7 @@ test('Codex: 인자(읽기 전용, 웹 검색, MCP), 지시문을 앞에 붙이�
   assert.ok(args.includes('tools.web_search=true'));
   assert.ok(args.includes(`mcp_servers.autojob.command=${JSON.stringify(TSX)}`));
   assert.ok(args.includes('mcp_servers.autojob.env={ "ECHO_TAG" = "T" }'));
+  assert.ok(args.includes('mcp_servers.autojob.default_tools_approval_mode="approve"')); // 없으면 codex 가 도구 호출을 전부 거절한다
   assert.equal(args.at(-1), '-');
   assert.ok(!codexArgs({ ...o, tools: [], mcp: undefined }, 'x').some((a) => a.startsWith('tools.') || a.startsWith('mcp_servers')));
 
@@ -206,10 +207,12 @@ test('Anthropic API (최신 모델): 새 웹 도구, 추론 성능(output_config
   assert.equal(h.bodies[0].output_config, undefined);
 });
 
-test('추론 성능: Claude Code 는 --effort, Codex 는 model_reasoning_effort (최대는 high 로)', () => {
+test('Codex는 선택한 추론 성능을 낮추지 않고 그대로 전달한다', () => {
   const dir = tempDir();
-  const args = codexArgs({ prompt: 'p', systemAppend: 's', effort: 'max', cwd: dir }, path.join(dir, 'l'));
-  assert.ok(args.includes('model_reasoning_effort="high"'));
+  for (const effort of ['high', 'xhigh', 'max'] as const) {
+    const args = codexArgs({ prompt: 'p', systemAppend: 's', effort, cwd: dir }, path.join(dir, 'l'));
+    assert.ok(args.includes(`model_reasoning_effort="${effort}"`));
+  }
 });
 
 test('한도 신호: 오류 없이 기다리려 해도 바로 잡아내고, 아무 말 없이 멈춰 있으면 넘어간다', async () => {

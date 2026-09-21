@@ -93,11 +93,15 @@ export async function installGuard(page: Page, cfg: GuardConfig, opts: { armed?:
   let armed = !!opts.armed;
   const script = pageGuardScript(cfg);
   const apply = async (p: Page) => {
+    if (pages.has(p)) return;
     pages.add(p);
     await p.addInitScript(script);
     if (armed) await p.addInitScript(ARM_SCRIPT);
     for (const f of p.frames()) await f.evaluate(`${script};${armed ? ARM_SCRIPT : ''}`).catch(() => {});
     p.on('popup', (child) => void apply(child).catch(() => {}));
+    for (const child of p.context().pages()) {
+      if (!child.isClosed() && await child.opener() === p) await apply(child);
+    }
   };
   await apply(page);
   return {

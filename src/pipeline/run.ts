@@ -11,6 +11,8 @@ import { optionsOf } from '../notion/mapping';
 import { jobWriter } from '../notion/setup';
 import { paths, runDir } from '../paths';
 import { getSecret } from '../secrets';
+import { loadSchema } from '../profile/schema';
+import { ProfileStore } from '../profile/store';
 import { SettingsStore } from '../settings/store';
 import { formatReport, runCollect, type CollectReport, type NotionSink } from './collect';
 
@@ -19,10 +21,7 @@ export type CollectRunOptions = { dryRun: boolean; sources?: string[]; limit?: n
 export async function collectNow(opts: CollectRunOptions): Promise<{ report: CollectReport; dir: string }> {
   const log = opts.log ?? console.log;
   const settings = loadSettings();
-  const c = settings.collect;
-  if (!c.keywords.length && !c.jasoseol.duty_groups.length && !c.jobkorea.duty_categories.length && !c.wanted.job_group_ids.length) {
-    throw new Error('검색 키워드가 없습니다. 설정 → 검색 키워드에서 추가해 주세요.');
-  }
+  const profile = new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema)).toJSON();
 
   let session: BrowserSession | null = null;
   const pages: Record<string, Page> = {};
@@ -51,6 +50,7 @@ export async function collectNow(opts: CollectRunOptions): Promise<{ report: Col
   try {
     const report = await runCollect({
       settings,
+      profile,
       http: new PoliteHttp(settings.collect.request_delay_ms),
       browserPage: tab('collect'),
       linkPage: tab('link'),
@@ -62,8 +62,8 @@ export async function collectNow(opts: CollectRunOptions): Promise<{ report: Col
       cwd: dir,
       log,
     });
-    writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 1));
-    writeFileSync(path.join(dir, 'report.txt'), formatReport(report, { verbose: true }));
+    writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 1), { mode: 0o600 });
+    writeFileSync(path.join(dir, 'report.txt'), formatReport(report, { verbose: true }), { mode: 0o600 });
     return { report, dir };
   } finally {
     const s = session as BrowserSession | null;

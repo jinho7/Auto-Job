@@ -209,3 +209,14 @@ test('작성 흐름: 고쳐 달라는 부탁이 있으면 그 말이 지시문�
   assert.match(calls[0].prompt, /3번 문항은 숫자를 넣어 더 구체적으로 다시 써 줘/);
   assert.match(calls[0].prompt, /말한 문항만 고치고, 말하지 않은 문항은 앞의 답을 그대로 다시 내놓으세요/);
 });
+
+
+test('안내 확인·단답형은 자소서 문체와 90% 분량 검사를 생략하고 실제 제한은 지킨다', () => {
+  for (const kind of ['notice', 'short_answer'] as const) {
+    const question = q({ kind, maxChars: 10 });
+    const check = checkEssay(question, { id: 1, text: '.' }, essay({ subtitle: true }), []);
+    assert.deepEqual(check.issues, []); assert.deepEqual(check.warnings, []);
+    assert.match(checkEssay(question, { id: 1, text: '가'.repeat(11) }, essay(), []).issues.join(), /초과/);
+    assert.match(checkEssay(question, { id: 1, text: '' }, essay(), []).issues.join(), /비어/);
+  }
+});

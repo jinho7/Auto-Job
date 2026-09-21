@@ -7,6 +7,8 @@ import { ensureInitialized } from '../src/init';
 import { paths } from '../src/paths';
 import { setSecret } from '../src/secrets';
 import { SettingsStore } from '../src/settings/store';
+import { ProfileStore } from '../src/profile/store';
+import { loadSchema } from '../src/profile/schema';
 
 const deps = { version: async (bin: string) => (bin === 'claude' ? '2.1.0 (Claude Code)' : null), cdpUp: async () => false };
 const by = (checks: Awaited<ReturnType<typeof runDoctor>>) => Object.fromEntries(checks.map((c) => [c.id, c.status]));
@@ -24,6 +26,12 @@ test('점검: 설치 직후에는 할 일을 알려 주고, 채우면 완료로 
   assert.equal(by(fresh).notion, 'warn');
   assert.equal(by(fresh).ai, 'ok'); // claude 있음
   assert.match(fresh.find((c) => c.id === 'sources')!.detail, /잡코리아/);
+
+  const profile = new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema));
+  profile.set('target.job_roles', ['디자인']);
+  const personalized = await runDoctor(deps);
+  assert.equal(by(personalized).keywords, 'ok'); // No manual keywords needed.
+  assert.match(personalized.find(c => c.id === 'keywords')!.detail, /추가 검색어 0개/);
 
   const store = new SettingsStore(paths.settings);
   store.addToList('collect.keywords', ['백엔드']);

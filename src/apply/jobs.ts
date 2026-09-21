@@ -1,224 +1,322 @@
-// 설정 화면에서 지원서 여러 개를 함께 진행하기: 지원서마다 대화방 하나, 브라우저 창 하나.
-// 방에는 AI 가 지금 하는 일이 계속 올라오고, 사람이 해야 할 일(로그인, 확인)이 생기면
-// 알림을 보내고 그 창을 앞으로 띄운 뒤, 대화방에서 답을 받는다.
-import type { BrowserSession } from '../browser/session';
+// One queue and one revocable execution per company. Every message goes to the real AI.
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { BrowserSession, MissingApplicationTab, type SessionRef } from '../browser/session';
+import { loadSettings } from '../config';
 import { applyNow, formatApplyReport, type ApplyOptions, type ApplyReport, type ApplyStep } from './run';
+import type { AsideHandoff } from './aside-handoff';
 
-export type JobStatus = 'queued' | 'running' | 'waiting' | 'done' | 'error' | 'stopped';
+export type JobStatus = 'queued' | 'running' | 'waiting' | 'done' | 'error' | 'stopped' | 'idle';
 export type JobMsgKind = 'ai' | 'log' | 'ask' | 'you' | 'system' | 'done' | 'error';
 export type JobMsg = { seq: number; job: string; at: string; kind: JobMsgKind; text: string };
 export type Job = {
-  id: string;
-  target: string;
-  title: string;
-  status: JobStatus;
-  /** 방 목록에 보일 "지금 하는 일" */
-  activity: string;
-  /** 사람에게 물은 것 (답을 기다리는 중) */
-  waiting: string | null;
-  steps: ApplyStep[];
-  createdAt: string;
-  finishedAt?: string;
-  reportDir?: string;
-  messages: JobMsg[];
+  id: string; target: string; title: string; status: JobStatus; activity: string; waiting: string | null;
+  steps: ApplyStep[]; createdAt: string; finishedAt?: string; reportDir?: string; messages: JobMsg[];
+  revision: number; stage?: ApplyStep; sessionRef?: SessionRef;
+  role?: { title: string; reason: string }; roleExplicit?: boolean;
+  summary?: string; blanks?: ApplyReport['blanks'];
+  reportContext?: Record<string, unknown>;
+  executionMode?: 'autojob' | 'aside';
+  asideHandoff?: AsideHandoff;
 };
-
 export type JobDeps = {
   run?: (o: ApplyOptions) => Promise<ApplyReport>;
   maxParallel: () => number;
-  /** 알림 (macOS 알림 등) */
   notify?: (title: string, message: string) => void;
-  /** 그 지원서의 브라우저 창을 맨 앞으로 */
   bringToFront?: (s: BrowserSession) => Promise<void>;
+  storageFile?: string;
+  restoreSession?: (ref: SessionRef) => Promise<BrowserSession>;
 };
-
 export const MAX_JOBS_PER_START = 8;
 const ACTIVE: JobStatus[] = ['queued', 'running', 'waiting'];
+class UserInputRequired extends Error {}
+type Turn = { revision: number; message?: string };
 
-/** 로그 한 줄 → 대화방 말풍선 (앞의 번호·들여쓰기는 정리) */
 export function toMessage(line: string): { kind: JobMsgKind; text: string } {
   const t = line.replace(/^\s+/, '');
-  if (t.startsWith('💭')) return { kind: 'ai', text: t.replace(/^💭\s*/, '') };
-  return { kind: 'log', text: t };
-}
-
-/** 대화방에 적은 부탁이 어느 단계를 다시 해야 하는 말인지 (기본은 자기소개서) */
-export function stepsForRequest(text: string): ApplyStep[] {
-  const t = text.replace(/\s+/g, '');
-  const basic = /(인적사항|기본정보|기본사항|학력|경력|자격증|어학|수상|병역|주소|전화|이메일|사진|첨부|파일)/.test(t);
-  const essay = /(자기소개서|자소서|문항|답변|지원동기|성장과정|글자|자수)/.test(t);
-  if (basic && !essay) return ['basic'];
-  if (basic && essay) return ['basic', 'essay'];
-  return ['essay'];
+  return t.startsWith('💭') ? { kind: 'ai', text: t.replace(/^💭\s*/, '') } : { kind: 'log', text: t };
 }
 
 export class ApplyJobManager {
   private seq = 0;
-  private nextId = 1;
   readonly jobs = new Map<string, Job>();
-  private readonly pending = new Map<string, { resolve: (s: string) => void; reject: (e: Error) => void }>();
+  private readonly pending = new Map<string, Turn>();
   private readonly sessions = new Map<string, BrowserSession>();
-  private readonly aborts = new Map<string, AbortController>();
+  private readonly executions = new Map<string, { ctl: AbortController; done?: Promise<void> }>();
+  private readonly handoffs = new Set<string>();
 
-  constructor(private readonly deps: JobDeps) {}
-
-  private push(job: Job, kind: JobMsgKind, text: string): void {
-    const m: JobMsg = { seq: ++this.seq, job: job.id, at: new Date().toISOString(), kind, text };
-    job.messages.push(m);
-    if (job.messages.length > 2000) job.messages.splice(0, job.messages.length - 2000);
+  constructor(private readonly deps: JobDeps) {
+    if (!deps.storageFile || !existsSync(deps.storageFile)) return;
+    const saved = JSON.parse(readFileSync(deps.storageFile, 'utf8')) as { version: number; seq: number; jobs: Job[] };
+    if (saved.version !== 1 || !Array.isArray(saved.jobs)) throw new Error('대화 기록 형식을 확인하세요');
+    this.seq = saved.seq;
+    for (const job of saved.jobs) {
+      this.jobs.set(job.id, job);
+      job.revision++;
+      if (ACTIVE.includes(job.status)) {
+        job.status = 'stopped';
+        job.activity = '앱이 재시작되었습니다. 대화에서 이어가기를 요청하세요.';
+      }
+    }
+    this.persist();
   }
 
-  start(targets: { target: string; title?: string }[], steps: ApplyStep[] = ['basic', 'essay']): Job[] {
+  private persist(): void {
+    const file = this.deps.storageFile;
+    if (!file) return;
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ version: 1, seq: this.seq, jobs: [...this.jobs.values()] }), { mode: 0o600 });
+    renameSync(tmp, file);
+  }
+
+  private push(job: Job, kind: JobMsgKind, text: string): void {
+    job.messages.push({ seq: ++this.seq, job: job.id, at: new Date().toISOString(), kind, text });
+    if (job.messages.length > 2000) job.messages.splice(0, job.messages.length - 2000);
+    this.persist();
+  }
+
+  start(targets: { target: string; title?: string }[], steps: ApplyStep[] = ['basic', 'essay'], mode: 'autojob' | 'aside' = 'autojob'): Job[] {
+    if (mode !== 'autojob' && mode !== 'aside') throw new Error('작업 방식을 확인하세요');
     if (!targets.length) throw new Error('지원할 공고를 골라 주세요');
     if (targets.length > MAX_JOBS_PER_START) throw new Error(`한 번에 ${MAX_JOBS_PER_START}개까지 고를 수 있습니다`);
-    const created = targets.map((t) => {
-      const job: Job = { id: `j${this.nextId++}`, target: t.target, title: t.title || t.target, status: 'queued', activity: '차례를 기다리는 중', waiting: null, steps, createdAt: new Date().toISOString(), messages: [] };
+    if (!steps.length || steps.some(s => s !== 'basic' && s !== 'essay')) throw new Error('작성 단계를 확인하세요');
+    const created = targets.map(t => {
+      const existing = [...this.jobs.values()].find(j => j.target === t.target);
+      if (existing) return existing;
+      const job: Job = { id: randomUUID(), target: t.target, title: t.title || t.target, status: 'queued', activity: '차례를 기다리는 중', waiting: null,
+        steps, createdAt: new Date().toISOString(), messages: [], revision: 1, executionMode: mode };
+      if (mode === 'aside') { job.status = 'idle'; job.activity = 'Aside용 자료를 준비해 우측 패널에 붙여넣으세요'; }
       this.jobs.set(job.id, job);
-      this.push(job, 'system', `${job.title} 지원서를 맡았습니다.`);
+      this.push(job, 'system', mode === 'aside' ? `${job.title}: Aside 패널에서 직접 작업하도록 선택했습니다. Auto-Job은 자동 실행하지 않습니다.` : `${job.title} 지원서를 맡았습니다.`);
+      if (mode === 'autojob') this.pending.set(job.id, { revision: job.revision });
       return job;
     });
     this.pump();
     return created;
   }
 
-  private running(): number {
-    return [...this.jobs.values()].filter((j) => j.status === 'running' || j.status === 'waiting').length;
-  }
-
   private pump(): void {
-    for (const job of this.jobs.values()) {
-      if (this.running() >= this.deps.maxParallel()) return;
-      if (job.status === 'queued') void this.run(job);
-    }
-  }
-
-  private async run(job: Job, again?: { request: string; steps: ApplyStep[] }): Promise<void> {
-    job.status = 'running';
-    const session = again ? this.sessions.get(job.id) : undefined;
-    job.activity = again ? '이어서 하는 중' : '브라우저 창을 여는 중';
-    this.push(job, 'system', again ? `이어서 합니다 (${again.steps.includes('basic') ? '인적사항' : '자기소개서'}).${session ? '' : ' 창이 닫혀 있어 다시 엽니다.'}` : '시작합니다. 브라우저에 이 지원서 창을 따로 엽니다.');
-    const ctl = new AbortController();
-    this.aborts.set(job.id, ctl);
-    try {
-      const report = await (this.deps.run ?? applyNow)({
-        target: job.target,
-        steps: again ? again.steps : job.steps,
-        window: { newWindow: true, background: true },
-        session,
-        keepSession: true,
-        skipLoginWait: !!again,
-        request: again?.request,
-        signal: ctl.signal,
-        onSession: (s) => this.sessions.set(job.id, s),
-        ask: (q) => this.ask(job, q),
-        notify: (_t, m) => this.attention(job, m),
-        log: (line) => {
-          const m = toMessage(line);
-          if (!m.text) return;
-          this.push(job, m.kind, m.text);
-          job.activity = m.text.slice(0, 80);
-        },
+    for (const [id, turn] of this.pending) {
+      if (this.executions.size >= Math.max(1, Math.min(8, this.deps.maxParallel()))) break;
+      if (this.executions.has(id)) continue;
+      this.pending.delete(id);
+      const execution = { ctl: new AbortController(), done: undefined as Promise<void> | undefined };
+      this.executions.set(id, execution);
+      execution.done = this.execute(this.jobs.get(id)!, turn, execution.ctl).finally(() => {
+        this.executions.delete(id);
+        this.pump();
       });
-      job.reportDir = report.dir;
-      job.status = 'done';
-      job.activity = report.completed ? '다 썼습니다 — 검토해 주세요 (제출은 직접)' : '끝까지 마치지 못한 부분이 있습니다';
-      this.push(job, 'done', formatApplyReport(report));
-      this.push(job, 'system', '고칠 곳이 있으면 여기에 적어 주세요. 예: "3번 문항 더 구체적으로 다시 써 줘", "학력에 부전공 넣어 줘". 이어서 그 창에서 고칩니다.');
-      this.attention(job, job.activity, { quiet: true });
-    } catch (e) {
-      const stopped = ctl.signal.aborted;
-      job.status = stopped ? 'stopped' : 'error';
-      job.activity = stopped ? '중지했습니다' : `오류: ${(e as Error).message.slice(0, 80)}`;
-      this.push(job, stopped ? 'system' : 'error', stopped ? '중지했습니다. 브라우저 창은 그대로 둡니다.' : `멈췄습니다: ${(e as Error).message}`);
-      this.push(job, 'system', '여기에 "이어서 해 줘" 라고 적으면 멈춘 곳에서 그 창 그대로 다시 합니다 (AI 사용량 한도였다면 풀린 뒤에).');
-    } finally {
-      job.waiting = null;
-      job.finishedAt = new Date().toISOString();
-      this.pending.delete(job.id);
-      this.aborts.delete(job.id);
-      // 창 연결(세션)은 남겨 둔다 — 대화방에서 이어서 고칠 수 있게. 방을 지울 때 함께 끊는다
-      this.pump();
     }
   }
 
-  /** 사람에게 묻는다: 방에 빨간 점, 알림, 그 창을 앞으로. 답은 대화방에서 */
-  private ask(job: Job, question: string): Promise<string> {
-    job.waiting = question;
-    job.status = 'waiting';
-    job.activity = '확인이 필요합니다';
-    this.push(job, 'ask', question);
-    this.attention(job, question);
-    return new Promise((resolve, reject) => this.pending.set(job.id, { resolve, reject }));
+  private async session(job: Job, reopenMissing = false): Promise<BrowserSession | undefined> {
+    const existing = this.sessions.get(job.id);
+    if (existing?.connected) return existing;
+    if (!job.sessionRef) return undefined;
+    if ([...this.jobs.values()].some(j => j.id !== job.id && j.sessionRef?.targetId === job.sessionRef!.targetId && j.sessionRef?.cdpPort === job.sessionRef!.cdpPort))
+      throw new Error('다른 작업에서 사용 중인 탭입니다');
+    try {
+      const restored = await (this.deps.restoreSession ?? (ref => BrowserSession.attach(loadSettings(), ref)))(job.sessionRef);
+      const ref = await restored.reference();
+      if ([...this.jobs.values()].some(j => j.id !== job.id && j.sessionRef?.targetId === ref.targetId && j.sessionRef?.cdpPort === ref.cdpPort)) {
+        await restored.detach(); throw new Error('복구된 탭을 다른 작업에서 사용 중입니다');
+      }
+      if (ref.targetId !== job.sessionRef.targetId) this.push(job, 'system', '브라우저를 다시 켜고 이 작업의 탭을 복구했습니다. 저장되지 않은 값은 남아 있지 않을 수 있어 실제 화면을 다시 확인합니다.');
+      this.sessions.set(job.id, restored); job.sessionRef = ref; this.persist();
+      return restored;
+    } catch (e) {
+      if (!reopenMissing || !(e instanceof MissingApplicationTab)) throw e;
+      this.sessions.delete(job.id);
+      job.sessionRef = undefined;
+      this.push(job, 'system', '기존 지원서 탭이 사라져 이 회사 전용 새 창에서 이어갑니다. 사이트에 저장되지 않은 이전 입력은 복구되지 않을 수 있습니다.');
+      return undefined; // applyNow creates a new owned window for this task's original target.
+    }
   }
 
-  private attention(job: Job, message: string, opts: { quiet?: boolean } = {}): void {
+  /** 미완료로 끝났을 때 사용자를 부르지 않고 스스로 이어서 할 횟수 */
+  private static readonly AUTO_CONTINUE = 2;
+
+
+  /** 한 번 실행. 미완료면 부르는 쪽에서 남은 일만 다시 맡긴다 */
+  private async runOnce(job: Job, o: { request?: string; context: Record<string, unknown>; session?: BrowserSession; ctl: AbortController; check: () => void }): Promise<ApplyReport> {
+    const { check, ctl } = o;
+    const current = () => !ctl.signal.aborted;
+    return (this.deps.run ?? applyNow)({
+      target: job.target, steps: job.steps, request: o.request, context: o.context, role: job.role,
+      window: { newWindow: true, background: true }, session: o.session, keepSession: true, skipLoginWait: !!o.session,
+      signal: ctl.signal,
+      onSession: async s => {
+        // Keep the exact tab even when a new instruction arrives during browser creation.
+        this.sessions.set(job.id, s);
+        job.sessionRef = await s.reference();
+        this.persist(); check();
+      },
+      onNotion: notion => { check(); job.reportContext = { ...job.reportContext, notion }; this.persist(); },
+      onRole: role => { check(); job.role = role; this.persist(); },
+      ask: async question => {
+        check(); job.waiting = question; job.status = 'waiting'; job.activity = '확인이 필요합니다';
+        this.push(job, 'ask', question); this.attention(job, question);
+        const reason = new UserInputRequired(question);
+        ctl.abort(reason); // revoke the browser bridge and release this company's worker
+        throw reason;
+      },
+      notify: (_title, text) => { if (current()) this.attention(job, text); },
+      log: line => { if (!current()) return; const m = toMessage(line); if (m.text) { job.activity = m.text.slice(0, 100); this.push(job, m.kind, m.text); } },
+    });
+  }
+
+  private async execute(job: Job, turn: Turn, ctl: AbortController): Promise<void> {
+    const current = () => !ctl.signal.aborted && job.revision === turn.revision;
+    const check = () => { if (!current()) throw ctl.signal.reason ?? new Error('새 사용자 지시로 중지되었습니다'); };
+    job.status = 'running';
+    job.finishedAt = undefined;
+    job.activity = turn.message ? 'AI가 대화와 현재 상태를 확인하고 있습니다' : '지원서 작성을 시작합니다';
+    this.persist();
+    try {
+      const context: Record<string, unknown> = { title: job.title, requested_role: job.role, original_steps: job.steps, interrupted_stage: job.stage,
+        waiting: job.waiting, summary: job.summary, blanks: job.blanks, last_result: job.reportContext,
+        ...(job.asideHandoff ? { external_work: { app: 'Aside', handed_off_at: job.asideHandoff.createdAt, result: 'Aside에서 한 작업은 동기화되지 않았습니다. 이전 리포트는 전달 이전 기록이며 현재 화면과 연결된 Notion에서 상태를 다시 확인해야 합니다.' } } : {}),
+        conversation: job.messages.filter(m => ['you', 'ai', 'ask', 'done'].includes(m.kind)).slice(-30).map(({ kind, text }) => ({ kind, text })),
+        recent_progress: job.messages.filter(m => m.kind === 'log').slice(-10).map(m => m.text) };
+      job.waiting = null;
+      const previousTarget = job.sessionRef?.targetId;
+      let session = await this.session(job, true);
+      if (previousTarget && job.sessionRef?.targetId !== previousTarget) context.browser_recovery = '브라우저 또는 지원서 탭을 다시 열었습니다. 이전 요약에 입력됐다고 적힌 값도 현재 화면에서 재확인하세요. 저장 전 값은 사라졌을 수 있습니다.';
+      check();
+      // 미완료로 끝나면 사용자를 부르지 않고 남은 일만 다시 맡긴다 (같은 창에서 이어서)
+      let report!: ApplyReport;
+      let request = turn.message;
+      for (let round = 0; ; round++) {
+        report = await this.runOnce(job, { request, context, session, ctl, check });
+        if (report.outcome === 'answered' || report.completed) break;
+        const remaining = (report.remaining ?? []).filter(x => x.trim());
+        if (!remaining.length || round >= ApplyJobManager.AUTO_CONTINUE) break;
+        if (context.previous_remaining && String(context.previous_remaining) === remaining.join('|')) break; // 더 나아가지 못하면 사용자에게
+        context.previous_remaining = remaining.join('|');
+        context.last_result = { summary: report.summary, remaining, save: report.save, notion: report.notion };
+        job.reportDir = report.dir;
+        this.push(job, 'system', `남은 일을 이어서 합니다 (${round + 1}/${ApplyJobManager.AUTO_CONTINUE}): ${remaining.join(' / ')}`);
+        request = `아직 끝나지 않았습니다. 지금 화면과 연결된 Notion 을 다시 확인하고 남은 일을 끝내 주세요:\n- ${remaining.join('\n- ')}`;
+        session = this.sessions.get(job.id) ?? session;
+        check();
+      }
+      check();
+      if (report.outcome === 'answered') {
+        job.status = 'idle'; job.activity = '답변했습니다 · 새 요청을 기다립니다';
+        this.push(job, 'ai', report.summary); return;
+      }
+      job.reportDir = report.dir; job.summary = report.summary; job.blanks = report.blanks;
+      job.reportContext = { role: report.role, summary: report.summary, blanks: report.blanks, save: report.save, notion: report.notion,
+        questions: report.essay?.questions.map(q => ({ id: q.id, question: q.question, kind: q.kind, answer: report.essay?.result?.answers.find(a => a.id === q.id)?.text })),
+        strategy: report.essay?.result?.strategy, checks: report.essay?.result?.checks };
+      job.status = report.completed ? 'done' : 'waiting';
+      job.waiting = report.completed ? null : report.remaining?.join('\n') || '미완료 항목을 확인해 주세요.';
+      job.activity = report.completed ? '작성 결과를 검토해 주세요 · 제출은 직접' : '미완료 · 남은 작업을 확인해 주세요';
+      this.push(job, report.completed ? 'done' : 'ask', formatApplyReport(report));
+      this.attention(job, job.activity, true);
+    } catch (e) {
+      if (job.revision !== turn.revision) return;
+      if (ctl.signal.reason instanceof UserInputRequired) return;
+      if (ctl.signal.aborted) { job.status = 'stopped'; return; }
+      job.status = 'error'; job.activity = `오류: ${(e as Error).message.slice(0, 100)}`;
+      this.push(job, 'error', `멈췄습니다: ${(e as Error).message}\n문제를 해결한 뒤 대화에서 이어가기를 요청하세요.`);
+    } finally {
+      if (job.revision === turn.revision) job.finishedAt = new Date().toISOString();
+      this.persist();
+    }
+  }
+
+  private attention(job: Job, message: string, quiet = false): void {
     this.deps.notify?.(`Auto-Job — ${job.title}`, message.replace(/\s+/g, ' ').slice(0, 120));
-    if (opts.quiet) return;
-    const s = this.sessions.get(job.id);
-    if (s) void this.deps.bringToFront?.(s).catch(() => {});
+    const session = this.sessions.get(job.id);
+    if (!quiet && session) void this.deps.bringToFront?.(session).catch(() => {});
   }
 
-  /** 대화방에서 보낸 말 */
-  answer(id: string, text: string): { answered: boolean; resumed?: boolean } {
+  answer(id: string, text: string): { answered: boolean; queued: boolean } {
     const job = this.jobs.get(id);
     if (!job) throw new Error('없는 대화방입니다');
-    const t = text.trim();
-    if (!t) throw new Error('보낼 말이 없습니다');
-    this.push(job, 'you', t);
-    const p = this.pending.get(id);
-    if (!p) {
-      if (ACTIVE.includes(job.status)) {
-        this.push(job, 'system', '지금은 묻고 있는 것이 없어 기록만 했습니다. 하던 일이 끝나면 여기에 적은 것을 알려 주세요.');
-        return { answered: false };
-      }
-      // 끝났거나 멈춘 방: 적은 말을 부탁으로 보고 그 창에서 이어서 한다
-      void this.run(job, { request: t, steps: stepsForRequest(t) });
-      return { answered: true, resumed: true };
-    }
-    this.pending.delete(id);
-    job.waiting = null;
-    job.status = 'running';
-    job.activity = '답을 받아 이어서 하는 중';
-    p.resolve(t);
-    return { answered: true };
+    if (this.handoffs.has(id)) throw new Error('Aside용 자료를 준비 중입니다. 잠시 후 다시 시도해 주세요.');
+    if (job.executionMode === 'aside') throw new Error('Aside 패널에서 직접 대화하거나 Auto-Job으로 전환해 주세요.');
+    const message = text.trim();
+    if (!message || message.length > 30000) throw new Error('메시지를 1~30,000자로 입력하세요');
+    job.revision++;
+    this.executions.get(id)?.ctl.abort(new Error('새 사용자 지시로 중지되었습니다'));
+    job.status = 'queued'; job.activity = '새 메시지를 AI에 전달하고 있습니다';
+    this.push(job, 'you', message);
+    this.pending.set(id, { revision: job.revision, message });
+    this.pump();
+    return { answered: true, queued: true };
   }
 
   stop(id: string): void {
     const job = this.jobs.get(id);
     if (!job) throw new Error('없는 대화방입니다');
-    if (job.status === 'queued') {
-      job.status = 'stopped';
-      job.activity = '시작 전에 취소했습니다';
-      this.push(job, 'system', '시작 전에 취소했습니다.');
-      return;
-    }
-    this.aborts.get(id)?.abort();
-    this.pending.get(id)?.reject(new Error('사용자가 중지했습니다'));
+    if (job.executionMode === 'aside') throw new Error('Aside 작업의 중지는 Aside 패널에서 직접 해 주세요.');
+    job.revision++;
+    this.pending.delete(id);
+    this.executions.get(id)?.ctl.abort(new Error('사용자가 중지했습니다'));
+    job.status = 'stopped'; job.activity = '중지했습니다';
+    this.push(job, 'system', '이 회사의 작업을 중지했습니다. 입력한 값과 탭은 유지됩니다.');
   }
 
   async focus(id: string): Promise<boolean> {
-    const s = this.sessions.get(id);
-    if (!s) return false;
-    await this.deps.bringToFront?.(s);
+    const job = this.jobs.get(id);
+    if (!job) throw new Error('없는 대화방입니다');
+    if (job.executionMode === 'aside') return false;
+    const session = await this.session(job);
+    if (!session) return false;
+    if (this.deps.bringToFront) await this.deps.bringToFront(session);
+    else await session.show();
     return true;
   }
 
-  /** 끝난 방 지우기 (브라우저 창은 남기고 연결만 끊는다) */
   remove(id: string): void {
     const job = this.jobs.get(id);
-    if (job && ACTIVE.includes(job.status)) throw new Error('진행 중인 지원서는 먼저 중지해 주세요');
+    if (this.handoffs.has(id) || this.executions.has(id) || job && ACTIVE.includes(job.status)) throw new Error('진행 중인 지원서는 먼저 중지하고 종료를 기다려 주세요');
     void this.sessions.get(id)?.detach().catch(() => {});
-    this.sessions.delete(id);
-    this.jobs.delete(id);
+    this.sessions.delete(id); this.pending.delete(id); this.jobs.delete(id); this.persist();
   }
 
-  /** 화면 갱신용: 방 목록과 since 이후 새 말풍선 */
+  async handoff(id: string, prepare: (job: Job) => Promise<AsideHandoff>): Promise<AsideHandoff> {
+    const job = this.jobs.get(id);
+    if (!job) throw new Error('없는 대화방입니다');
+    if (this.handoffs.has(id)) throw new Error('이미 자료를 준비 중입니다');
+    this.handoffs.add(id);
+    try {
+      if (job.executionMode !== 'aside' && (ACTIVE.includes(job.status) || this.executions.has(id))) this.stop(id);
+      await this.executions.get(id)?.done;
+      // No native agent is launched. Ownership passes to the user in Aside after the old worker exits.
+      const handoff = await prepare(job);
+      job.asideHandoff = handoff; job.executionMode = 'aside'; job.status = 'idle';
+      job.activity = 'Aside용 자료 준비됨 · 패널에 붙여넣어 시작';
+      this.push(job, 'system', 'Aside용 자료를 준비했습니다. 요청을 복사해 Aside 우측 패널에 붙여넣으세요. 이후 진행·중지는 Aside에서 직접 확인합니다. 기존 브라우저의 저장 전 입력값은 옮겨지지 않습니다.');
+      return handoff;
+    } finally { this.handoffs.delete(id); }
+  }
+
+  useAutoJob(id: string): void {
+    const job = this.jobs.get(id);
+    if (!job) throw new Error('없는 대화방입니다');
+    if (this.handoffs.has(id) || this.executions.has(id)) throw new Error('현재 작업이 정리된 뒤 전환해 주세요.');
+    if (job.executionMode !== 'aside') return;
+    job.executionMode = 'autojob'; job.status = 'idle'; job.activity = 'Auto-Job 선택됨 · 새 요청을 기다립니다';
+    this.push(job, 'system', 'Auto-Job으로 전환했습니다. Aside에서 진행하던 작업을 먼저 마친 뒤 여기에서 요청하세요. Aside의 변경 결과는 현재 화면에서 다시 확인합니다.');
+  }
+
+  async close(): Promise<void> {
+    for (const id of this.jobs.keys()) if (this.executions.has(id) || this.pending.has(id)) this.stop(id);
+    await Promise.all([...this.executions.values()].map(e => e.done));
+    await Promise.all([...this.sessions.values()].map(s => s.detach().catch(() => {})));
+    this.sessions.clear();
+  }
+
   snapshot(since = 0) {
     const jobs = [...this.jobs.values()];
-    return {
-      seq: this.seq,
-      jobs: jobs.map(({ messages, ...j }) => ({ ...j, lastSeq: messages.at(-1)?.seq ?? 0 })),
-      messages: jobs.flatMap((j) => j.messages.filter((m) => m.seq > since)).sort((a, b) => a.seq - b.seq),
+    return { seq: this.seq,
+      jobs: jobs.map(({ messages, sessionRef, reportContext, ...j }) => ({ ...j, lastSeq: messages.at(-1)?.seq ?? 0 })),
+      messages: jobs.flatMap(j => j.messages.filter(m => m.seq > since)).sort((a, b) => a.seq - b.seq),
     };
   }
 }

@@ -27,7 +27,8 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
 }
 
-export function startServer(port: number, token = randomBytes(16).toString('hex')): Promise<{ server: Server; url: string; token: string }> {
+export function startServer(port: number, token = randomBytes(16).toString('hex')): Promise<{ server: Server; url: string; token: string; instanceId: string }> {
+  const instanceId = randomBytes(16).toString('hex');
   let allowedHosts = new Set<string>();
   const server = createServer(async (req, res) => {
     const send = (status: number, body: unknown, type = 'application/json; charset=utf-8') => {
@@ -40,6 +41,11 @@ export function startServer(port: number, token = randomBytes(16).toString('hex'
 
       const file = STATIC[url.pathname];
       if (req.method === 'GET' && file) return send(200, readFileSync(path.join(WEB, file[0])), file[1]);
+
+      if (req.method === 'GET' && url.pathname === '/api/ui-instance') {
+        if (req.headers['x-autojob-token'] !== token) return send(401, { error: '인증이 필요합니다' });
+        return send(200, { application: 'auto-job', instanceId });
+      }
 
       const handler = routes[`${req.method} ${url.pathname}`];
       if (!handler) return send(404, { error: '없는 주소' });
@@ -56,7 +62,7 @@ export function startServer(port: number, token = randomBytes(16).toString('hex'
     server.listen(port, '127.0.0.1', () => {
       const actual = (server.address() as { port: number }).port; // port 0 이면 OS 가 고른 포트
       allowedHosts = new Set([`127.0.0.1:${actual}`, `localhost:${actual}`]);
-      resolve({ server, url: `http://127.0.0.1:${actual}/#t=${token}`, token });
+      resolve({ server, url: `http://127.0.0.1:${actual}/#t=${token}`, token, instanceId });
     });
   });
 }

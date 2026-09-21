@@ -11,19 +11,21 @@ const MAX_FILES = 400;
 const MAX_DEPTH = 6;
 
 export type SourceFile = { rel: string; ext: string; size: number; modified: string };
-export type SourceFolder = { path: string; note?: string; ok: boolean; error?: string; files: SourceFile[]; truncated?: boolean };
+export type SourceFolder = { path: string; note?: string; ok: boolean; error?: string; files: SourceFile[]; truncated?: boolean; warnings?: string[] };
 
 export function scanFolder(dir: string, note?: string): SourceFolder {
   const abs = path.resolve(expandHome(dir.trim()));
   if (!existsSync(abs)) return { path: abs, note, ok: false, error: '폴더가 없습니다', files: [] };
   if (!statSync(abs).isDirectory()) return { path: abs, note, ok: false, error: '폴더가 아닙니다', files: [] };
   const files: SourceFile[] = [];
+  const warnings: string[] = [];
   let truncated = false;
   const walk = (d: string, depth: number) => {
     let entries: import('node:fs').Dirent[];
     try {
       entries = readdirSync(d, { withFileTypes: true });
     } catch {
+      warnings.push(`${d}: 하위 폴더를 읽지 못했습니다. 접근 권한을 확인해 주세요`);
       return;
     }
     for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -34,6 +36,7 @@ export function scanFolder(dir: string, note?: string): SourceFolder {
       const full = path.join(d, e.name);
       if (e.isDirectory()) {
         if (!SKIP_DIRS.has(e.name) && depth < MAX_DEPTH) walk(full, depth + 1);
+        else if (!SKIP_DIRS.has(e.name)) truncated = true;
       } else if (e.isFile()) {
         const ext = path.extname(e.name).slice(1).toLowerCase();
         if (!SOURCE_EXTS.includes(ext)) continue;
@@ -43,7 +46,7 @@ export function scanFolder(dir: string, note?: string): SourceFolder {
     }
   };
   walk(abs, 0);
-  return { path: abs, note, ok: true, files, ...(truncated ? { truncated } : {}) };
+  return { path: abs, note, ok: true, files, ...(truncated ? { truncated } : {}), ...(warnings.length ? { warnings } : {}) };
 }
 
 export function scanFolders(folders: { path?: string; note?: string }[]): SourceFolder[] {

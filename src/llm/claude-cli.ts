@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { waitForAgentExit } from './process';
 
 export type AgentEvent =
   | { type: 'tool'; name: string; input: Record<string, unknown> }
@@ -30,6 +31,8 @@ export type AgentRun = {
   stallMs?: number;
   onEvent?: (e: AgentEvent) => void;
   signal?: AbortSignal;
+  /** Only supplied MCP tools; no user plugins, shell, or implicit tools (conversation/browser agents). */
+  isolated?: boolean;
 };
 
 /**
@@ -61,6 +64,7 @@ export function writeClaudeMcpConfig(o: McpServerSpec, dir: string): string {
 }
 
 export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
+  o.signal?.throwIfAborted();
   const tools = o.tools ?? [];
   // 파일 도구는 허용 목록에 넣지 않는다: 그러면 작업 폴더(cwd, --add-dir) 안에서만 저절로 허용되고 밖은 거절된다
   const allowed = [...tools.filter((t) => !FILE_TOOLS.has(t)), ...(o.mcp ? [`mcp__${o.mcp.server}`] : [])];
@@ -83,8 +87,9 @@ export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
     cwd: o.cwd,
     env: { ...process.env, ...o.env, MCP_TOOL_TIMEOUT: String(30 * 60_000) }, // ask_user 로 사람을 기다릴 수 있게
     stdio: ['pipe', 'pipe', 'pipe'],
-    signal: o.signal,
   });
+  const exited = waitForAgentExit(child, o.signal);
+  child.stdin.on('error', () => {});
   child.stdin.end(o.prompt);
 
   let buf = '';
@@ -144,11 +149,9 @@ export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
       }
     }
   });
-  const code: number = await new Promise((resolve, reject) => {
-    child.on('error', (e) => reject((e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('claude 명령을 찾지 못했습니다. Claude Code 를 설치하고 로그인해 주세요.') : e));
-    child.on('close', resolve);
-  });
-  if (stall) clearTimeout(stall);
+  const code = await exited.catch(e => {
+    throw (e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('claude 명령을 찾지 못했습니다. Claude Code 를 설치하고 로그인해 주세요.') : e;
+  }).finally(() => { if (stall) clearTimeout(stall); });
   if (startError) throw startError;
   if (!final) throw new Error(`Claude 실행이 결과 없이 끝났습니다 (코드 ${code}). ${stderr.slice(-500)}`);
   return final;
