@@ -26,6 +26,7 @@ test('실패 종류와 한도가 풀리는 시각', () => {
   assert.equal(classifyFailure('Claude 사용량 한도에 걸려 멈췄습니다'), 'limit');
   assert.equal(classifyFailure('AI API 요청 실패 (429): rate_limit_error'), 'limit');
   assert.equal(classifyFailure('Not logged in · Please run /login'), 'auth');
+  assert.equal(classifyFailure('Failed to authenticate: OAuth session expired and could not be refreshed'), 'auth'); // 로그인 만료도 다음 연결로
   assert.equal(classifyFailure('codex 명령을 찾지 못했습니다'), 'unavailable');
   assert.equal(classifyFailure('AI 응답에서 JSON 을 찾지 못했습니다'), null);
   const now = new Date('2026-09-15T13:10:00');

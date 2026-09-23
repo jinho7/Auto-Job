@@ -30,8 +30,9 @@ export type FailureKind = 'limit' | 'auth' | 'unavailable';
 /** 결과 글이나 오류 글로 실패 종류를 가린다. 넘어갈 이유가 아니면 null */
 export function classifyFailure(text: string): FailureKind | null {
   if (/usage limit|hit your .*limit|limit reached|rate.?limit|quota|insufficient_quota|credit balance|too many requests|\b429\b|\b529\b|overloaded|사용량 한도/i.test(text)) return 'limit';
-  if (/not logged in|please run \/login|invalid api key|invalid x-api-key|authentication|unauthorized|\b401\b|codex login|API 키를 넣어|API_KEY 가 없습니다/i.test(text)) return 'auth';
-  if (/명령을 찾지 못했습니다|ENOENT|아무 반응이 없어|requires approval|승인이 필요/i.test(text)) return 'unavailable';
+  if (/not logged in|please run \/login|invalid api key|invalid x-api-key|authenticat|oauth|session expired|token (?:has )?expired|unauthorized|\b401\b|codex login|API 키를 넣어|API_KEY 가 없습니다/i.test(text)) return 'auth';
+  // ENOENT 는 넣지 않는다: 작업 폴더가 사라져도 나서, 명령이 정말 없을 때만 '명령을 찾지 못했습니다'로 바꿔 알린다 (llm/process.ts)
+  if (/명령을 찾지 못했습니다|아무 반응이 없어|requires approval|승인이 필요/i.test(text)) return 'unavailable';
   return null;
 }
 

@@ -1,9 +1,9 @@
 // Claude Code 를 헤드리스(claude -p)로 돌린다.
 // 내장 도구는 넘겨받은 것만(기본: 없음), MCP 는 넘겨받은 서버만 쓴다. 사용자의 다른 MCP 설정은 불러오지 않는다.
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { waitForAgentExit } from './process';
+import { spawnFailure, waitForAgentExit } from './process';
 
 export type AgentEvent =
   | { type: 'tool'; name: string; input: Record<string, unknown> }
@@ -64,6 +64,8 @@ export function writeClaudeMcpConfig(o: McpServerSpec, dir: string): string {
 }
 
 export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
+  // 작업 폴더가 없으면 실행 오류(ENOENT)가 "명령을 찾지 못함"처럼 보여, 멀쩡한 연결을 쉬게 만든다. 먼저 따로 알린다
+  if (!existsSync(o.cwd)) throw new Error(`AI 작업 폴더가 없습니다 (이미 끝난 작업일 수 있습니다): ${o.cwd}`);
   o.signal?.throwIfAborted();
   const tools = o.tools ?? [];
   // 파일 도구는 허용 목록에 넣지 않는다: 그러면 작업 폴더(cwd, --add-dir) 안에서만 저절로 허용되고 밖은 거절된다
@@ -150,7 +152,7 @@ export async function runClaudeAgent(o: AgentRun): Promise<AgentResult> {
     }
   });
   const code = await exited.catch(e => {
-    throw (e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('claude 명령을 찾지 못했습니다. Claude Code 를 설치하고 로그인해 주세요.') : e;
+    throw spawnFailure(e, 'claude', o.cwd, 'claude 명령을 찾지 못했습니다. Claude Code 를 설치하고 로그인해 주세요.');
   }).finally(() => { if (stall) clearTimeout(stall); });
   if (startError) throw startError;
   if (!final) throw new Error(`Claude 실행이 결과 없이 끝났습니다 (코드 ${code}). ${stderr.slice(-500)}`);

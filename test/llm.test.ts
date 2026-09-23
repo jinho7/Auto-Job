@@ -11,6 +11,7 @@ import { writeClaudeMcpConfig } from '../src/llm/claude-cli';
 import { codexArgs, runCodexAgent } from '../src/llm/codex-cli';
 import { LIMIT_SIGNAL } from '../src/llm/claude-cli';
 import { classifyFailure } from '../src/llm/pool';
+import { spawnFailure } from '../src/llm/process';
 import { connectMcp, type ToolHost } from '../src/llm/tool-host';
 import { paths, ROOT } from '../src/paths';
 import { tempDir } from './helpers';
@@ -255,4 +256,29 @@ test('연결 확인: 답이 없으면 정해진 시간에 그만두고 무엇을
   assert.match(r.message, /0초 안에 답하지 않아 그만두었습니다/);
   assert.match(r.message, /codex exec/); // 직접 해 볼 명령을 알려 준다
   assert.ok(r.ms >= 250 && r.ms < 5000, `${r.ms}ms`);
+});
+
+test('작업 폴더가 없으면 "명령을 찾지 못함"으로 착각하지 않는다 (멀쩡한 연결을 쉬게 만들지 않게)', async () => {
+  const gone = path.join(tempDir(), 'deleted');
+  const bin = path.join(paths.fixtures, 'llm', 'fake-codex.mjs');
+  await assert.rejects(runCodexAgent({ prompt: 'p', systemAppend: 's', tools: [], cwd: gone }, bin), (e: Error) => {
+    assert.match(e.message, /AI 작업 폴더가 없습니다/);
+    assert.equal(classifyFailure(e.message), null); // 연결 문제로 분류하지 않는다
+    return true;
+  });
+});
+
+test('실행 오류 구분: 명령이 정말 없을 때만 "명령을 찾지 못함"으로 알린다', () => {
+  const enoent = Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' });
+  const here = tempDir();
+  // 명령이 없음 → 연결 문제 (다음 연결로)
+  assert.equal(classifyFailure(spawnFailure(enoent, 'no-such-cli-xyz', here, 'codex 명령을 찾지 못했습니다').message), 'unavailable');
+  // 작업 폴더가 사라짐 → 연결 문제 아님 (멀쩡한 연결을 쉬게 하지 않는다)
+  const gone = spawnFailure(enoent, 'node', path.join(here, 'gone'), 'x');
+  assert.match(gone.message, /AI 작업 폴더가 사라졌습니다/);
+  assert.equal(classifyFailure(gone.message), null);
+  // 명령도 폴더도 있는데 시작 못 함 → 연결 문제 아님, 다시 시도 대상
+  const transient = spawnFailure(enoent, 'node', here, 'x');
+  assert.match(transient.message, /실행을 시작하지 못했습니다/);
+  assert.equal(classifyFailure(transient.message), null);
 });

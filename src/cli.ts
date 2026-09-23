@@ -14,6 +14,8 @@ import { COLLECTORS } from './collectors';
 import { formatDoctor, runDoctor } from './doctor';
 import { ensureInitialized } from './init';
 import { testAi } from './llm';
+import { loginCommand } from './llm/connections';
+import { classifyFailure, connectionLabel, connectionsOf } from './llm/pool';
 import { notify } from './notify';
 import { formatReport } from './pipeline/collect';
 import { collectNow } from './pipeline/run';
@@ -120,10 +122,19 @@ program
       const checks = await runDoctor();
       console.log(formatDoctor(checks));
       if (o.ai && existsSync(paths.settings)) {
-        console.log('\nAI 연결 확인 중…');
-        const t = await testAi(loadSettings());
-        console.log(`${t.ok ? '✅' : '❌'} ${t.message} (${(t.ms / 1000).toFixed(1)}초)`);
-        if (!t.ok) process.exitCode = 1;
+        // 켜 둔 연결을 하나씩 모두 확인한다 (첫 연결만 보면 뒤의 연결이 로그인 만료여도 모른다)
+        const settings = loadSettings();
+        const conns = connectionsOf(settings).filter((c) => c.enabled);
+        console.log(`\nAI 연결 확인 중… (${conns.length}개)`);
+        for (const c of conns) {
+          const t = await testAi(settings, undefined, c);
+          console.log(`${t.ok ? '✅' : '❌'} ${connectionLabel(c)}: ${t.message} (${(t.ms / 1000).toFixed(1)}초)`);
+          if (!t.ok) {
+            const login = loginCommand(c);
+            if (classifyFailure(t.message) === 'auth' && login) console.log(`   → 다시 로그인: ${login}`);
+            process.exitCode = 1;
+          }
+        }
       }
       if (checks.some((c) => c.status === 'bad')) process.exitCode = 1;
     }),
@@ -492,9 +503,9 @@ program
   );
 program
   .command('apply')
-  .description('지원서 작성: 로그인 대기(직접) → 인적사항 입력(AI) → 자기소개서 작성·입력(AI). 제출은 하지 않는다')
+  .description('지원서 작성: AI 가 지원서 화면까지 들어가 인적사항·자기소개서를 쓰고 임시저장, Notion 정리까지 한다. 로그인·본인인증처럼 사람만 할 일은 그때 묻는다. 제출은 하지 않는다')
   .argument('<target>', 'Notion 공고 페이지 주소, 지원 페이지 주소, 또는 HTML 파일')
-  .option('--no-wait', '로그인 대기 없이 바로 시작 (이미 입력 화면일 때)')
+  .option('--no-wait', '(예전 옵션, 지금은 효과 없음 — 로그인이 필요할 때만 AI 가 묻습니다)')
   .option('--steps <steps>', '할 단계, 쉼표로: basic(인적사항), essay(자기소개서)', 'basic,essay')
   .action(
     run(async (target: string, o: { wait: boolean; steps: string }) => {

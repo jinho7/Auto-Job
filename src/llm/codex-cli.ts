@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { LIMIT_SIGNAL, type AgentResult, type AgentRun } from './claude-cli';
-import { waitForAgentExit } from './process';
+import { spawnFailure, waitForAgentExit } from './process';
 
 const WEB = new Set(['WebSearch', 'WebFetch']);
 /** TOML 값: 문자열/배열/인라인 표. JSON 문자열 표기는 TOML 기본 문자열로도 유효하다 */
@@ -39,6 +39,8 @@ export function codexPrompt(o: AgentRun): string {
 }
 
 export async function runCodexAgent(o: AgentRun, bin = 'codex'): Promise<AgentResult> {
+  // 작업 폴더가 없으면 실행 오류(ENOENT)가 "명령을 찾지 못함"처럼 보여, 멀쩡한 연결을 쉬게 만든다. 먼저 따로 알린다
+  if (!existsSync(o.cwd)) throw new Error(`AI 작업 폴더가 없습니다 (이미 끝난 작업일 수 있습니다): ${o.cwd}`);
   o.signal?.throwIfAborted();
   const lastFile = path.join(o.cwd, `codex-last-${Date.now()}.txt`);
   const child = spawn(bin, codexArgs(o, lastFile), { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -90,7 +92,7 @@ export async function runCodexAgent(o: AgentRun, bin = 'codex'): Promise<AgentRe
     }
   });
   const code = await exited.catch(e => {
-    throw (e as NodeJS.ErrnoException).code === 'ENOENT' ? new Error('codex 명령을 찾지 못했습니다. Codex CLI 를 설치하고 로그인해 주세요 (npm i -g @openai/codex, codex login).') : e;
+    throw spawnFailure(e, bin, o.cwd, 'codex 명령을 찾지 못했습니다. Codex CLI 를 설치하고 로그인해 주세요 (npm i -g @openai/codex, codex login).');
   }).finally(() => { if (stall) clearTimeout(stall); });
   const text = existsSync(lastFile) ? readFileSync(lastFile, 'utf8') : lastMessage;
   const isError = !!failure || (code !== 0 && !text);

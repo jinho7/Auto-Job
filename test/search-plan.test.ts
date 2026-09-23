@@ -4,7 +4,7 @@ import { readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { parseSettings } from '../src/config';
-import { prepareSearch } from '../src/jobs/search-plan';
+import { inParallel, prepareSearch } from '../src/jobs/search-plan';
 import { SeenStore } from '../src/jobs/seen';
 import { PoliteHttp } from '../src/http';
 import type { RunAgent } from '../src/llm';
@@ -117,4 +117,73 @@ test('수집 통합: 개인 자료 검색어를 실제 수집기에 전달하고
   assert.equal(report.ai.costUsd, 0.03);
   assert.match(formatReport(report), /내 자료 기반 검색/);
   assert.match(formatReport(report), /근거: 내 정보/);
+});
+
+test('자료 분석 저장: 바뀌지 않은 파일은 다시 분석하지 않고, 바뀐 파일만 새로 분석한다', async () => {
+  const folder = tempDir(), cwd = tempDir();
+  writeFileSync(path.join(folder, 'a.md'), '결산 자동화 경험');
+  writeFileSync(path.join(folder, 'b.md'), '재고 관리 경험');
+  const seen: string[] = [];
+  const counting: RunAgent = async (o) => {
+    const input = JSON.parse(o.prompt);
+    if (input.documents) {
+      for (const d of input.documents) seen.push(path.basename(d.source));
+      const doc = input.documents.find((d: { text: string }) => d.text.includes('결산 자동화 경험'));
+      return { isError: false, text: JSON.stringify({ evidence: doc ? [{ source: doc.source, quote: '결산 자동화 경험', fact: '결산' }] : [] }) };
+    }
+    return { isError: false, text: JSON.stringify({ directions: [{ role: '회계', keywords: ['회계'], reason: '결산 경험', evidence_ids: [input.evidence[0].id] }], warnings: [] }) };
+  };
+  const logs: string[] = [];
+  const first = await prepareSearch(settings(), folderProfile(folder), { cwd, runAgent: counting, log: (m) => logs.push(m) });
+  assert.deepEqual(first.keywords, ['회계']);
+  assert.deepEqual(seen.sort(), ['a.md', 'b.md']);
+
+  // 그대로 다시 수집: 분석 호출 없이 전에 뽑은 근거를 다시 쓴다
+  seen.length = 0; logs.length = 0;
+  const again = await prepareSearch(settings(), folderProfile(folder), { cwd, runAgent: counting, log: (m) => logs.push(m) });
+  assert.deepEqual(seen, []);
+  assert.deepEqual(again.evidence.map((e) => e.quote), ['결산 자동화 경험']);
+  assert.ok(logs.some((l) => /2조각은 전에 분석한 결과를 다시 씀, 새로 분석할 것 없음/.test(l)), logs.join('\n'));
+  assert.ok(logs.some((l) => /전에 만든 검색 계획을 다시 씁니다/.test(l)), '자료가 그대로면 종합도 다시 하지 않는다');
+  assert.deepEqual(again.keywords, ['회계']);
+
+  // b.md 만 바꾸면 b.md 만 다시 분석한다
+  seen.length = 0;
+  writeFileSync(path.join(folder, 'b.md'), '재고 관리와 물류 개선 경험');
+  await prepareSearch(settings(), folderProfile(folder), { cwd, runAgent: counting });
+  assert.deepEqual(seen, ['b.md']);
+});
+
+test('동시 분석: 하나가 실패해도 이미 돌고 있는 것이 끝난 뒤에 실패를 알리고, 새로 시작하지 않는다', async () => {
+  const started: number[] = [], finished: number[] = [];
+  await assert.rejects(inParallel([0, 1, 2, 3, 4, 5], 3, async (n) => {
+    started.push(n);
+    if (n === 0) throw new Error('첫 분석 실패');
+    await new Promise((r) => setTimeout(r, 30));
+    finished.push(n);
+  }), /첫 분석 실패/);
+  // 실패 전에 시작한 1, 2 는 끝까지 기다렸고, 실패 뒤에는 새로 시작하지 않았다
+  assert.deepEqual(finished.sort(), [1, 2]);
+  assert.ok(!started.includes(5));
+});
+
+test('근거가 많으면 나눠 종합한 뒤 합치고, 합친 결과도 실제 근거 id 만 쓴다', async () => {
+  const folder = tempDir(), cwd = tempDir();
+  for (let i = 0; i < 6; i++) writeFileSync(path.join(folder, `f${i}.md`), `경험${i} 데이터 정리`);
+  const prompts: { system: string; input: any }[] = [];
+  const agent: RunAgent = async (o) => {
+    const input = JSON.parse(o.prompt);
+    prompts.push({ system: o.systemAppend, input });
+    if (input.documents) return { isError: false, text: JSON.stringify({ evidence: input.documents.map((d: { source: string; text: string }) => ({ source: d.source, quote: d.text, fact: d.text })) }) };
+    if (input.candidates) return { isError: false, text: JSON.stringify({ directions: [{ role: '데이터', keywords: ['데이터'], reason: '합침', evidence_ids: input.candidates.flatMap((c: { evidence_ids: string[] }) => c.evidence_ids) }], warnings: [] }) };
+    // 묶음별 종합: 인용문 없이 사실만 받는다
+    assert.ok(input.evidence.every((e: Record<string, unknown>) => !('quote' in e) && e.fact && e.id));
+    return { isError: false, text: JSON.stringify({ directions: [{ role: '데이터', keywords: ['데이터'], reason: '묶음', evidence_ids: [input.evidence[0].id] }], warnings: [] }) };
+  };
+  const plan = await prepareSearch(settings(), folderProfile(folder), { cwd, runAgent: agent, planChunk: 150 });
+  const perGroup = prompts.filter((p) => p.input.evidence && !p.input.candidates);
+  assert.ok(perGroup.length > 1, '근거를 여러 묶음으로 나눠 종합한다');
+  assert.equal(prompts.filter((p) => p.input.candidates).length, 1); // 마지막에 한 번 합친다
+  assert.deepEqual(plan.keywords, ['데이터']);
+  assert.ok(plan.directions[0].evidence_ids.every((id) => plan.evidence.some((e) => e.id === id)));
 });

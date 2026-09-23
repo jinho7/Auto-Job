@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import type { Settings } from '../config';
 import { notify } from '../notify';
 import { paths, runDir } from '../paths';
-import { GuardBlockedError } from './guard';
+import { GuardBlockedError, markAgentAction } from './guard';
 import { BrowserSession } from './session';
 
 export type Check = { name: string; ok: boolean; detail?: string };
@@ -62,19 +62,29 @@ export async function browserSelfTest(settings: Settings, opts: { keepOpen?: boo
     check('2차 가드: 최종 제출 거부', await rejected('#submit'));
     check('2차 가드: 지원하기 거부 (armed 후)', await rejected('#start'));
 
-    // 1차 가드: 가드를 우회해 직접 눌러도 페이지 안에서 막혀야 한다
+    // 1차 가드: AI 도구가 2차 검사를 거치지 않고 눌러도 페이지 안에서 막혀야 한다.
+    // (AI 도구는 움직이기 직전에 표시를 찍는다. 실제 도구와 같게 표시를 찍고 누른다)
+    await markAgentAction(page);
     await page.locator('#submit').click();
+    await markAgentAction(page);
     await page.locator('#start').click();
+    await markAgentAction(page);
     await page.locator('#name').press('Enter'); // 엔터로 암묵적 제출
     await page.waitForTimeout(300);
     const after = await log();
     check('1차 가드: 최종 제출 클릭 차단', !after.includes('SUBMITTED'));
     check('1차 가드: 지원하기 클릭 차단 (armed 후)', count(after, '지원 시작') === 1);
 
-    // 대화상자: "최종 제출하시겠습니까?" 확인창은 거절
-    await page.locator('#leave').click();
+    // 대화상자: AI 가 누르다 뜬 "최종 제출하시겠습니까?" 확인창은 거절
+    await session.click('#leave');
     await page.waitForTimeout(300);
-    check('제출 확인 대화상자 거절', !(await log()).includes('SUBMITTED-VIA-CONFIRM'));
+    check('제출 확인 대화상자 거절', !(await log()).includes('SUBMITTED-VIA-CONFIRM') && session.events.some((e) => e.startsWith('대화상자 거절')));
+
+    // 사람이 직접 누르는 것은 막지 않는다 (제출은 사람이 한다). 표시 없이 누르면 통과해야 한다
+    await page.waitForTimeout(3100); // AI 표시가 식을 때까지
+    await page.locator('#start').click();
+    await page.waitForTimeout(300);
+    check('사람 클릭은 막지 않음', count(await log(), '지원 시작') === 2);
 
     const dir = runDir('browser-test');
     mkdirSync(dir, { recursive: true });
