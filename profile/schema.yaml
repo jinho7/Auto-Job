@@ -64,7 +64,7 @@ sections:
         type: list
         hint: 지원서에 올릴 파일 (성적증명서, 졸업증명서 등). AI 가 "종류"를 보고 지원서의 알맞은 첨부 칸에 올린다. "언제 쓰나"에 조건을 적으면 그때만 올린다
         item:
-          kind: { label: 종류, type: select, allow_other: true, required: true, options: [성적증명서, 졸업(예정)증명서, 재학증명서, 어학 성적표, 자격증 사본, 경력증명서, 포트폴리오, 이력서, 자기소개서, 기타] }
+          kind: { label: 종류, type: select, allow_other: true, required: true, options: [성적증명서, 졸업(예정)증명서, 재학증명서, 어학 성적표, 자격증 사본, 수상 내역, 경력증명서, 포트폴리오, 이력서, 자기소개서, 기타] }
           file: { label: 파일, type: file, required: true }
           when: { label: 언제 쓰나, example: 공공기관 지원 시, 영문 성적증명서를 요구할 때 }
       links:
