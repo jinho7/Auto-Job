@@ -303,7 +303,8 @@ function renderScalar(f, path) {
   } else if (f.type === 'tags') {
     control = h('input', { id, value: (value || []).join(', '), placeholder: '쉼표로 구분', onchange: (e) => save(e.target.value.split(',').map((s) => s.trim()).filter(Boolean)) });
   } else if (f.type === 'file') {
-    const upload = h('input', { type: 'file', accept: 'image/*,.pdf' });
+    // 증명사진은 이미지, 첨부 서류는 문서 파일까지 (10MB 이하)
+    const upload = h('input', { type: 'file', accept: path.at(-1) === 'photo' ? 'image/*' : 'image/*,.pdf,.hwp,.hwpx,.doc,.docx,.zip' });
     const preview = h('img', { alt: '', style: 'display:none;max-width:120px;max-height:160px;border-radius:6px;border:1px solid var(--line);object-fit:cover' });
     if (value) api('POST', '/api/profile/file', { name: value }).then((r) => { if (r.base64) { preview.src = `data:${r.mime};base64,${r.base64}`; preview.style.display = 'block'; } }).catch(() => {});
     const sendFile = async (file) => {
