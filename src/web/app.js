@@ -304,7 +304,7 @@ function renderScalar(f, path) {
     control = h('input', { id, value: (value || []).join(', '), placeholder: '쉼표로 구분', onchange: (e) => save(e.target.value.split(',').map((s) => s.trim()).filter(Boolean)) });
   } else if (f.type === 'file') {
     // 증명사진은 이미지, 첨부 서류는 문서 파일까지 (10MB 이하)
-    const upload = h('input', { type: 'file', accept: path.at(-1) === 'photo' ? 'image/*' : 'image/*,.pdf,.hwp,.hwpx,.doc,.docx,.zip' });
+    const upload = h('input', { type: 'file', accept: String(path.at(-1)).startsWith('photo') ? 'image/*' : 'image/*,.pdf,.hwp,.hwpx,.doc,.docx,.zip' });
     const preview = h('img', { alt: '', style: 'display:none;max-width:120px;max-height:160px;border-radius:6px;border:1px solid var(--line);object-fit:cover' });
     if (value) api('POST', '/api/profile/file', { name: value }).then((r) => { if (r.base64) { preview.src = `data:${r.mime};base64,${r.base64}`; preview.style.display = 'block'; } }).catch(() => {});
     const sendFile = async (file) => {
@@ -380,7 +380,8 @@ function importPage() {
     h('h1', null, '붙여넣어 채우기'),
     h('p', { class: 'lead' }, '가지고 있는 글을 통째로 붙여넣으면 AI 가 항목별로 나눕니다. 바로 저장하지 않고, 미리보기에서 확인한 뒤 적용합니다. 글에 없는 내용은 만들지 않습니다.'),
     card(null, text, h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', type: 'button', onclick: analyze }, 'AI 로 정리하기'))),
-    state.schema.sections.basic?.fields.photo ? card('증명사진', h('p', { class: 'muted small', style: 'margin-top:0' }, '사진은 글로 붙여넣을 수 없어서 여기서 올립니다. 지원서에 사진 칸이 있으면 AI 가 이 파일을 올립니다.'), renderScalar(state.schema.sections.basic.fields.photo, ['basic', 'photo'])) : null,
+    state.schema.sections.basic?.fields.photo ? card('증명사진', h('p', { class: 'muted small', style: 'margin-top:0' }, '사진은 글로 붙여넣을 수 없어서 여기서 올립니다. 지원서에 사진 칸이 있으면 AI 가 올립니다. 용량·크기 제한(예: 100KB 이하, 120×160px)이 있는 사이트에는 최적화 사진을, 없으면 기본 사진을 씁니다.'),
+      ...['photo', 'photo_optimized'].filter((k) => state.schema.sections.basic.fields[k]).map((k) => renderScalar(state.schema.sections.basic.fields[k], ['basic', k]))) : null,
     out,
   ];
 }

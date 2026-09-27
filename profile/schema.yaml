@@ -57,7 +57,8 @@ sections:
           exemption_reason: { label: 면제 사유 }
       veteran: { label: 보훈 대상, type: select, options: [비대상, 대상] }
       disability: { label: 장애 여부, type: select, options: [비대상, 대상] }
-      photo: { label: 증명사진, type: file }
+      photo: { label: 증명사진 (기본), type: file, hint: 원본 화질 증명사진. 사이트에 따로 제한이 없으면 이것을 올린다 }
+      photo_optimized: { label: 증명사진 (최적화), type: file, hint: '용량·크기를 줄인 사진. 100KB 이하, 3×4cm, 120×160px 처럼 제한이 있는 사이트에 올린다' }
       documents:
         label: 첨부 서류
         type: list
