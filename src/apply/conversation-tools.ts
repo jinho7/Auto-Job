@@ -15,7 +15,7 @@ function failureReason(content: Awaited<ReturnType<BridgeTools['call']>>['conten
 /** App conversation/reporting only. Browser schemas and execution come from MCP. */
 export function conversationTools(browser: BridgeTools, handlers: BridgeHandlers): BridgeTools {
   const extras = [
-    { name: 'ask_user', description: '실행을 멈추고 사용자를 기다립니다. 로그인·본인인증·CAPTCHA·결제처럼 사용자가 직접 해야 하는 절차, 또는 사용자만 아는 사실이 없어 진행 자체가 불가능할 때만 쓰세요. 판단이 필요한 선택은 스스로 결정하고, 값이 없으면 비워 둔 뒤 blanks/note 로 남기세요.', key: 'question' },
+    { name: 'ask_user', description: '실행을 멈추고 사용자를 기다립니다. 인증번호 입력·비밀번호 새로 만들기·CAPTCHA·결제처럼 사용자만 할 수 있는 입력, 또는 사용자만 아는 사실이 없어 진행 자체가 불가능할 때만 쓰세요. 로그인(저장된 계정)·필수 약관 동의·인증 요청 버튼·지원분야 선택은 직접 하세요. 값이 없으면 비워 둔 뒤 blanks/note 로 남기세요.', key: 'question' },
     { name: 'note', description: '사용자가 알아야 할 참고사항을 기록합니다.', key: 'text' },
   ];
   return {
