@@ -345,3 +345,24 @@ test('파이프라인: 수집기 하나가 실패해도 나머지는 계속', as
   assert.deepEqual(r.sources.map((x) => [x.id, x.error ?? x.count]), [['bad', '사이트 오류'], ['fake', 1]]);
   assert.equal(r.counts.would_register, 1);
 });
+
+test('수집 도중 중지하면 다음 사이트와 Notion 등록으로 진행하지 않는다', async () => {
+  const ctl = new AbortController(), cwd = tempDir();
+  let writes = 0, nextSite = 0;
+  const fake: Collector = { id: 'fake', label: '합성 사이트', status: 'ok', method: 'http', note: '', collect: async () => { ctl.abort(new Error('합성 중지')); return []; } };
+  await assert.rejects(runCollect({ settings: base, cwd, http: new PoliteHttp(), browserPage: async () => { throw new Error('사용 없음'); }, seen: new SeenStore(path.join(cwd, 'seen.json')),
+    notion: { tags: [], add: async () => { writes++; throw new Error('쓰기 금지'); } }, dryRun: false, signal: ctl.signal,
+    sources: ['fake', 'next'], collectors: [fake, { ...fake, id: 'next', collect: async () => { nextSite++; return []; } }] }), /합성 중지/);
+  assert.equal(writes, 0); assert.equal(nextSite, 0);
+});
+
+test('수집 HTTP의 진행 중 요청에도 취소가 전달되고 취소 뒤 재요청하지 않는다', async () => {
+  const ctl = new AbortController(); let requests = 0;
+  const http = new PoliteHttp(0, (async (_url, init) => {
+    requests++;
+    await new Promise<void>((_resolve, reject) => { init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true }); ctl.abort(new Error('합성 HTTP 중지')); });
+    return new Response('도달하면 안 됨');
+  }) as typeof fetch, undefined, ctl.signal);
+  await assert.rejects(http.request('https://synthetic.example/jobs'), /합성 HTTP 중지/);
+  assert.equal(requests, 1);
+});

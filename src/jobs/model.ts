@@ -1,5 +1,9 @@
 // 수집기, Notion, 지원서 작성이 함께 쓰는 공고 모델
+import type { VerifiedAffiliatePolicy } from './affiliates';
 export type JobPosting = {
+  applicationGroup?: { policy: VerifiedAffiliatePolicy; members: JobPosting[] };
+  sourceUrl?: string;
+  recruitmentRoles?: string[];
   company: string;
   /** 공고 제목 (Notion 에는 속성이 없어 페이지 본문/중복 판단에만 쓴다) */
   title?: string;

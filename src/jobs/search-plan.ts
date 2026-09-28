@@ -87,10 +87,11 @@ function regroupBy<T>(items: T[], size: (item: T) => number, limit: number): T[]
 }
 const unique = (xs: string[]) => [...new Map(xs.map((v) => v.trim()).filter(Boolean).map((v) => [v.toLowerCase(), v])).values()];
 
-export async function prepareSearch(settings: Settings, profile: Record<string, any>, o: { cwd: string; runAgent?: RunAgent; log?: (m: string) => void; signal?: AbortSignal; planChunk?: number }): Promise<SearchPlan> {
+export async function prepareSearch(settings: Settings, profile: Record<string, any>, o: { cwd: string; runAgent?: RunAgent; log?: (m: string) => void; signal?: AbortSignal; planChunk?: number; callTimeoutMs?: number }): Promise<SearchPlan> {
+  o.signal?.throwIfAborted();
   const manualKeywords = unique(settings.collect.keywords);
   const c = settings.collect;
-  const siteFilter = c.jasoseol.duty_groups.length || c.jobkorea.duty_categories.length || c.wanted.job_group_ids.length;
+  const siteFilter = c.jasoseol.duty_groups.length || c.jobkorea.duty_categories.length || c.saramin.duty_categories.length || c.catch.duty_categories.length || c.wanted.job_group_ids.length;
   if (!hasSearchProfile(profile)) {
     if (!manualKeywords.length && !siteFilter) throw new Error('맞춤 검색에 쓸 자료가 없습니다. 내 정보에서 희망 직무·경험을 입력하거나 소재 폴더를 연결해 주세요. 추가 검색어는 선택 사항입니다.');
     return { mode: 'manual', keywords: manualKeywords, manualKeywords, directions: [], evidence: [], sources: [], filesRead: 0, costUsd: 0, warnings: ['개인 자료가 없어 직접 지정한 검색어·사이트 직무 분류만 사용했습니다. 맞춤 검색은 내 정보 또는 소재 폴더를 연결하면 시작합니다.'] };
@@ -114,14 +115,21 @@ export async function prepareSearch(settings: Settings, profile: Record<string, 
   const ask = async (prompt: string, system: string) => {
     // 동시에 도는 AI 가 서로의 파일을 건드리지 않게 호출마다 작업 폴더를 따로 쓴다
     const cwd = mkdtempSync(path.join(dir, 'call-'));
-    const call = () => run({ prompt, systemAppend: readFileSync(path.join(paths.prompts, system), 'utf8'), tools: [], isolated: true, cwd, signal: o.signal,
-      onEvent: (ev) => ev.type === 'switch' && o.log?.(`  🔁 ${ev.from}: ${ev.reason} → 다음 AI 연결`) });
+    const ctl = new AbortController();
+    const signal = AbortSignal.any([ctl.signal, ...[o.signal].filter((s): s is AbortSignal => !!s)]);
+    const timer = setTimeout(() => ctl.abort(new Error('자료 분석 응답이 5분을 넘겨 중지했습니다. 저장된 분석은 다음 실행에서 재사용합니다.')), o.callTimeoutMs ?? 5 * 60_000);
+    const call = async () => {
+      signal.throwIfAborted();
+      return run({ prompt, systemAppend: readFileSync(path.join(paths.prompts, system), 'utf8'), tools: [], isolated: true, cwd, signal,
+        onEvent: (ev) => ev.type === 'switch' && o.log?.(`  🔁 ${ev.from}: ${ev.reason} → 다음 AI 연결`) });
+    };
     // 실행이 잠깐 시작되지 못한 경우(명령·폴더는 있음)는 한 번 더 해 본다
     const result = await call().catch(async (e: Error) => {
       if (!/실행을 시작하지 못했습니다/.test(e.message)) throw e;
       o.log?.(`  ↻ ${e.message.slice(0, 120)} — 다시 시도합니다`);
       return call();
-    });
+    }).finally(() => clearTimeout(timer));
+    signal.throwIfAborted();
     if (result.isError) throw new Error(`맞춤 검색 AI 분석에 실패했습니다: ${result.text.replace(/\s+/g, ' ').slice(0, 200)} — AI 연결 상태를 확인한 뒤 다시 실행해 주세요. (이미 분석한 자료는 저장돼 있어 다음에 이어서 합니다)`);
     costUsd += result.costUsd ?? 0;
     return extractJson<unknown>(result.text);
@@ -167,6 +175,7 @@ export async function prepareSearch(settings: Settings, profile: Record<string, 
       o.log?.('  자료가 그대로여서 전에 만든 검색 계획을 다시 씁니다');
       proposed = savedPlan.data;
     } else if (groups.length === 1) {
+      o.log?.(`▶ 확인한 근거 ${evidence.length}개로 검색 방향을 정합니다`);
       proposed = planSchema.parse(await ask(JSON.stringify({ evidence: groups[0], manualKeywords }), 'search-plan.md'));
     } else {
       o.log?.(`  근거 ${evidence.length}개를 ${groups.length}묶음으로 나눠 종합한 뒤 합칩니다`);

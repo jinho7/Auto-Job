@@ -5,6 +5,7 @@ import type { JobPosting } from '../jobs/model';
 import { addDays, ymd, type Collector, type CollectorContext, type Experience, type RawPosting } from './types';
 
 const BASE = 'https://www.saramin.co.kr';
+const CATEGORY_PAGE = `${BASE}/zf_user/jobs/list/job-category`;
 const text = (el: HTMLElement | null | undefined) => (el?.text ?? '').replace(/\s+/g, ' ').trim();
 
 /** "~ 09/30(수)", "오늘마감", "내일마감", "18시마감", "채용시", "상시채용" */
@@ -37,6 +38,18 @@ export function normalizeEmployment(s: string): string[] {
     .split(/[·,/]/)
     .map((x) => x.trim().replace(/^인턴직$/, '인턴'))
     .filter((x) => EMPLOYMENT_WORDS.test(x));
+}
+
+export function parseSaraminCategories(html: string): { code: string; name: string }[] {
+  const names = new Map<string, string>();
+  for (const m of html.matchAll(/"MCLS_CD_NO":"(\d+)","MCLS_CD_NM":"((?:[^"\\]|\\.)*)"/g)) names.set(m[1], JSON.parse(`"${m[2]}"`));
+  return [...names].map(([code, name]) => ({ code, name }));
+}
+
+export async function loadSaraminCategories(http: CollectorContext['http']): Promise<{ code: string; name: string }[]> {
+  const response = await http.request(CATEGORY_PAGE);
+  if (response.status !== 200) throw new Error(`사람인 직무 분류 확인 실패 (${response.status})`);
+  return parseSaraminCategories(response.text);
 }
 
 /** 검색 결과 HTML → 공고 목록 */
@@ -81,6 +94,7 @@ export function parseSaraminDetail(html: string): { sizeHints: string[]; homepag
 }
 
 export const saramin: Collector = {
+  detail: (ctx, posting) => saraminDetail(ctx, posting.sourceId, posting.applyUrl),
   id: 'saramin',
   label: '사람인',
   method: 'http',
@@ -90,10 +104,15 @@ export const saramin: Collector = {
     const { settings, http, now, log } = ctx;
     const perPage = Math.min(100, settings.collect.max_per_keyword);
     const out = new Map<string, RawPosting>();
-    for (const keyword of settings.collect.keywords) {
+    const wanted = settings.collect.saramin.duty_categories;
+    const categories = wanted.length ? (await loadSaraminCategories(http)).filter(c => wanted.includes(c.name)) : [];
+    if (wanted.some(name => !categories.some(c => c.name === name))) throw new Error('설정한 사람인 직무 분류를 사이트에서 찾지 못했습니다. 전체 검색으로 넓히지 않습니다.');
+    const queries = categories.length ? categories.map(c => ({ category: c.code, label: c.name, keyword: '' })) : settings.collect.keywords.map(keyword => ({ category: '', label: keyword, keyword }));
+    for (const query of queries) {
       let got = 0;
       for (let page = 1; got < settings.collect.max_per_keyword; page++) {
-        const q = new URLSearchParams({ searchType: 'search', searchword: keyword, recruitPage: String(page), recruitPageCount: String(perPage), recruitSort: 'relation' });
+        const q = new URLSearchParams({ searchType: 'search', searchword: query.keyword, recruitPage: String(page), recruitPageCount: String(perPage), recruitSort: 'relation' });
+        if (query.category) q.set('cat_mcls', query.category);
         if (settings.collect.exclude_experienced) q.set('exp_cd', '1'); // 신입
         const res = await http.request(`${BASE}/zf_user/search/recruit?${q}`);
         if (res.status !== 200) throw new Error(`사람인 검색 실패 (${res.status})`);
@@ -105,7 +124,7 @@ export const saramin: Collector = {
         got += items.length;
         if (items.length < perPage) break;
       }
-      log(`  사람인 "${keyword}": ${got}건`);
+      log(`  사람인 ${query.category ? '직무 분류' : '검색어'} "${query.label}": ${got}건`);
     }
     return [...out.values()];
   },
@@ -122,7 +141,7 @@ async function saraminDetail(ctx: CollectorContext, recIdx: string, applyUrl?: s
     },
     body: new URLSearchParams({ rec_idx: recIdx, rec_seq: '0', view_type: 'search' }).toString(),
   });
-  if (res.status !== 200) return {};
+  if (res.status !== 200) throw new Error(`사람인 상세 확인 실패 (${res.status})`);
   const d = parseSaraminDetail(res.text);
   return { sizeHints: d.sizeHints, applyUrl: applyUrl ?? d.homepageUrl };
 }

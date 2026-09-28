@@ -122,9 +122,12 @@ export const settingsSchema = z.object({
     keywords: z.array(z.string()),
     employment_types: z.array(z.string()),
     exclude_experienced: z.boolean(),
+    group_affiliates: z.boolean().default(false),
     lookahead_days: z.number().int().min(1).max(365).default(60),
     max_per_keyword: z.number().int().min(1).max(500).default(100),
     request_delay_ms: z.number().int().min(500).max(30_000).default(1500),
+    saramin: z.object({ duty_categories: z.array(z.string()).default([]) }).default({ duty_categories: [] }),
+    catch: z.object({ duty_categories: z.array(z.string()).default([]) }).default({ duty_categories: [] }),
     jasoseol: z.object({ duty_groups: z.array(z.string()).default([]) }).default({ duty_groups: [] }),
     /** 잡코리아 직무 대분류 이름 (비우면 검색 키워드만으로 거른다) */
     jobkorea: z.object({ duty_categories: z.array(z.string()).default([]) }).default({ duty_categories: [] }),

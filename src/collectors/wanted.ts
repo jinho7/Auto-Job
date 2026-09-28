@@ -78,6 +78,15 @@ async function pageJson<T>(page: Page, path: string): Promise<T> {
 }
 
 export const wanted: Collector = {
+  async detail(ctx, posting) {
+    const page = await ctx.browserPage();
+    if (!page.url().startsWith(BASE)) await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    const robots = await page.evaluate(() => fetch('/robots.txt').then(async r => ({ status: r.status, text: await r.text() })));
+    const route = `/api/chaos/jobs/v5/${posting.sourceId}/details`;
+    if (robots.status !== 200 || !isAllowed(parseRobots(robots.text), route)) throw new Error('원티드 상세 자동 접근을 확인할 수 없습니다.');
+    await new Promise(r => setTimeout(r, ctx.settings.collect.request_delay_ms));
+    return mapWantedDetail((await pageJson<{ data: WantedDetail }>(page, route)).data);
+  },
   id: 'wanted',
   label: '원티드',
   method: 'browser',

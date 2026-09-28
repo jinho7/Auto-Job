@@ -62,14 +62,17 @@ export function expandDutyGroups(all: DutyGroup[], names: string[]): Set<number>
   return picked;
 }
 
-export function mapCalendar(entries: CalendarEntry[], duty: DutyGroup[], opts: { dutyNames: string[]; keywords: string[]; now: Date }): Omit<RawPosting, 'detail'>[] {
+export function mapCalendar(entries: CalendarEntry[], duty: DutyGroup[], opts: { dutyNames: string[]; keywords: string[]; now: Date; excludeExperienced?: boolean }): Omit<RawPosting, 'detail'>[] {
   const names = new Map(duty.map((g) => [g.id, g.name]));
   const selected = opts.dutyNames.length ? expandDutyGroups(duty, opts.dutyNames) : null;
   const kws = opts.keywords.map((k) => k.toLowerCase());
   const out: Omit<RawPosting, 'detail'>[] = [];
   for (const e of entries) {
     if (e.end_time && new Date(e.end_time) < opts.now) continue; // 이미 마감
-    const groupIds = [...new Set(e.employments.flatMap((x) => (x.duty_groups ?? []).map((g) => g.group_id)))];
+    const employments = e.employments.filter(x => (!opts.excludeExperienced || DIVISION[x.division]?.exp !== 'experienced') &&
+      (!selected || (x.duty_groups ?? []).some(g => selected.has(g.group_id))));
+    if (!employments.length) continue;
+    const groupIds = [...new Set(employments.flatMap((x) => (x.duty_groups ?? []).map((g) => g.group_id)))];
     const groupNames = groupIds.map((id) => names.get(id)).filter((n): n is string => !!n);
     if (selected) {
       if (!groupIds.some((id) => selected.has(id))) continue;
@@ -77,7 +80,7 @@ export function mapCalendar(entries: CalendarEntry[], duty: DutyGroup[], opts: {
       const hay = `${e.title} ${groupNames.join(' ')}`.toLowerCase();
       if (!kws.some((k) => hay.includes(k))) continue;
     }
-    const { types, experience } = summarizeDivisions(e.employments.map((x) => x.division));
+    const { types, experience } = summarizeDivisions(employments.map((x) => x.division));
     out.push({
       source: 'jasoseol',
       sourceId: String(e.id),
@@ -122,6 +125,20 @@ async function openRecruit(page: Page): Promise<void> {
 }
 
 export const jasoseol: Collector = {
+  async detail(ctx, posting) {
+    const page = await ctx.browserPage();
+    await openRecruit(page);
+    const robots = await page.evaluate(() => fetch('/robots.txt').then(async r => ({ status: r.status, text: await r.text() })));
+    const route = `/api/v1/employment_companies/${posting.sourceId}`;
+    if (robots.status !== 200 || !isAllowed(parseRobots(robots.text), route)) throw new Error('자소설닷컴 상세 자동 접근을 확인할 수 없습니다.');
+    await new Promise(r => setTimeout(r, ctx.settings.collect.request_delay_ms));
+    const d = await pageJson<DetailResponse>(page, `${route}?skip_read_log=true`);
+    const emps = d.employments ?? [];
+    const { types, experience } = summarizeDivisions(emps.flatMap(e => e.division ?? []));
+    return { applyUrl: d.employment_page_url || undefined,
+      roleNames: [...new Set([...posting.roleNames, ...emps.map(e => e.field).filter((f): f is string => !!f)])],
+      ...(types.length ? { employmentTypes: types, experience } : {}) };
+  },
   id: 'jasoseol',
   label: '자소설닷컴',
   method: 'browser',
@@ -144,6 +161,7 @@ export const jasoseol: Collector = {
       dutyNames: settings.collect.jasoseol.duty_groups,
       keywords: settings.collect.keywords,
       now,
+      excludeExperienced: settings.collect.exclude_experienced,
     });
     ctx.log(`  자소설닷컴: 달력 ${cal.employment?.length ?? 0}건 중 직무 조건에 맞는 ${items.length}건`);
     const dutyNames = new Map(duty.map((g) => [g.id, g.name]));

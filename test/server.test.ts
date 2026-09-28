@@ -29,6 +29,14 @@ async function call(method: string, p: string, body?: unknown, headers: Record<s
 test('토큰이 없거나 틀리면 API 를 쓸 수 없다', async () => {
   assert.equal((await call('GET', '/api/state', undefined, {})).status, 401);
   assert.equal((await call('GET', '/api/state', undefined, { 'X-AutoJob-Token': 'b'.repeat(32) })).status, 401);
+  assert.equal((await call('POST', '/api/collect/grouping', { enabled: true }, {})).status, 401);
+});
+
+test('계열사 묶음은 선택 설정이며 체크 여부만 받아 저장한다', async () => {
+  assert.equal((await call('POST', '/api/collect/grouping', { enabled: 'true' })).status, 400);
+  assert.equal((await call('POST', '/api/collect/grouping', { enabled: true })).status, 200);
+  assert.equal((await call('GET', '/api/state')).json.settings.collect.group_affiliates, true);
+  await call('POST', '/api/collect/grouping', { enabled: false });
 });
 
 test('화면 파일은 토큰 없이 열린다', async () => {
@@ -91,4 +99,12 @@ test('Notion: 토큰이 없으면 안내 메시지', async () => {
   const r = await call('GET', '/api/notion/databases');
   assert.equal(r.status, 400);
   assert.match(r.json.error, /Notion 토큰이 없습니다/);
+});
+
+test('공고 수집 진행 조회와 중지에도 인증이 필요하고 잘못된 실행은 중지하지 않는다', async () => {
+  assert.equal((await call('GET', '/api/collect/status', undefined, {})).status, 401);
+  assert.equal((await call('POST', '/api/collect/stop', { id: 'wrong' }, {})).status, 401);
+  const state = await call('GET', '/api/collect/status');
+  assert.equal(state.json.status, 'idle');
+  assert.equal((await call('POST', '/api/collect/stop', { id: 'wrong' })).status, 400);
 });

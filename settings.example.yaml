@@ -105,8 +105,13 @@ collect:
     - 계약직
   exclude_experienced: true    # 경력직 제외 ([신입 및 경력]은 포함)
   lookahead_days: 60           # 마감이 오늘부터 이 기간 안인 공고만 (상시 채용은 포함)
-  max_per_keyword: 100         # 사람인 키워드당 최대 공고 수
+  max_per_keyword: 100         # 직무 분류 또는 검색어별 수집 범위 (사이트 페이지 단위)
   request_delay_ms: 1500       # 같은 사이트에 보내는 요청 사이 간격 (사이트 부하 방지)
+  group_affiliates: false      # 공식 중복 지원 금지와 같은 회차가 확인된 계열사만 한 페이지로 정리
+  saramin:
+    duty_categories: []        # 사이트 직무 분류 이름. 설정 화면에서 선택 (예: IT개발·데이터)
+  catch:
+    duty_categories: []        # 사이트 직무 분류 이름. 설정 화면에서 선택 (예: IT/인터넷)
   jasoseol:
     duty_groups: []            # 자소설닷컴 직무 분류. 비우면 검색 키워드로 직무명을 거른다
   jobkorea:

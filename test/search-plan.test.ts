@@ -187,3 +187,15 @@ test('근거가 많으면 나눠 종합한 뒤 합치고, 합친 결과도 실�
   assert.deepEqual(plan.keywords, ['데이터']);
   assert.ok(plan.directions[0].evidence_ids.every((id) => plan.evidence.some((e) => e.id === id)));
 });
+
+test('자료 분석 응답 제한 시간이 지나면 실제 취소 신호를 전달하고 임시 폴더를 정리한다', async () => {
+  const cwd = tempDir();
+  const agent: RunAgent = async o => {
+    await new Promise<void>((_resolve, reject) => {
+      o.signal!.addEventListener('abort', () => reject(o.signal!.reason), { once: true });
+    });
+    throw new Error('도달하면 안 됨');
+  };
+  await assert.rejects(prepareSearch(settings(), { target: { job_roles: ['합성 시간초과 직무'] } }, { cwd, runAgent: agent, callTimeoutMs: 20 }), /5분을 넘겨/);
+  assert.deepEqual(readdirSync(cwd), []);
+});

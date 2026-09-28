@@ -10,6 +10,8 @@ import { NotionClient } from '../notion/client';
 import { COLLECTORS } from '../collectors';
 import { loadDutyGroups } from '../collectors/jasoseol';
 import { loadDutyCategories } from '../collectors/jobkorea';
+import { loadSaraminCategories } from '../collectors/saramin';
+import { loadCatchCategories } from '../collectors/catch';
 import { PoliteHttp } from '../http';
 import { runDoctor } from '../doctor';
 import { ApplyJobManager } from '../apply/jobs';
@@ -45,8 +47,8 @@ function summarizeFolder(f: SourceFolder) {
 }
 import { testAi } from '../llm';
 import { parseDeadline, type JobPosting } from '../jobs/model';
-import { OUTCOME_LABEL } from '../pipeline/collect';
-import { collectNow } from '../pipeline/run';
+import { CollectTask } from '../pipeline/task';
+import { groupPreview } from '../pipeline/affiliate-preview';
 import { bootstrapDatabase } from '../notion/bootstrap';
 import { FIELD_SPEC, optionsOf } from '../notion/mapping';
 import { applySuggestions, checkCurrent, INTEGRATIONS_URL, jobWriter, listDatabases, notionClient, selectDatabase, SETUP_STEPS } from '../notion/setup';
@@ -59,7 +61,13 @@ import { connectionKeyName, SECRET_KEYS, secretStatus, setSecret, type SecretKey
 import { SOURCE_LABELS, STANDARD_EMPLOYMENT } from '../settings/editor';
 import { parseNotionId, SettingsStore } from '../settings/store';
 
-let collectRunning = false;
+export const collectTask = new CollectTask(undefined, undefined, path.join(paths.data, 'collection-task.json'));
+export async function closeCollectTask(): Promise<void> { await collectTask.close(); }
+const collectOptions = (b: Record<string, unknown>) => ({
+  dryRun: b.dryRun !== false,
+  sources: Array.isArray(b.sources) && b.sources.length ? b.sources.map(String) : undefined,
+  limit: typeof b.limit === 'number' && b.limit > 0 ? b.limit : undefined,
+});
 
 const profileStore = () => new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema));
 const settingsStore = () => new SettingsStore(paths.settings);
@@ -345,22 +353,29 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
     const categories = await loadDutyCategories(new PoliteHttp(loadSettings().collect.request_delay_ms));
     return { categories };
   },
+  'GET /api/collect/saramin-duty-categories': async () => ({ categories: await loadSaraminCategories(new PoliteHttp(loadSettings().collect.request_delay_ms)) }),
+  'GET /api/collect/catch-duty-categories': async () => ({ categories: await loadCatchCategories(new PoliteHttp(loadSettings().collect.request_delay_ms)) }),
   'POST /api/collect/run': async (b) => {
-    if (collectRunning) throw new Error('이미 수집 중입니다. 끝날 때까지 기다려 주세요.');
-    collectRunning = true;
-    const log: string[] = [];
-    try {
-      const { report, dir } = await collectNow({
-        dryRun: b.dryRun !== false,
-        sources: Array.isArray(b.sources) && b.sources.length ? b.sources.map(String) : undefined,
-        limit: typeof b.limit === 'number' && b.limit > 0 ? b.limit : undefined,
-        log: (m) => log.push(m),
-      });
-      return { report, dir, log, labels: OUTCOME_LABEL };
-    } finally {
-      collectRunning = false;
-    }
+    collectTask.start(collectOptions(b));
+    const task = await collectTask.wait();
+    if (!task.result) throw new Error(task.error ?? '수집을 완료하지 못했습니다.');
+    return { ...task.result, log: task.log };
   },
+  'POST /api/collect/start': (b) => collectTask.start(collectOptions(b)),
+  'POST /api/collect/selected': (b) => {
+    const ids = Array.isArray(b.ids) ? b.ids.map(String) : [];
+    if (b.groupAffiliates !== undefined && typeof b.groupAffiliates !== 'boolean') throw new Error('계열사 묶음 설정을 다시 확인해 주세요.');
+    return collectTask.start({ dryRun: false, selection: { preview: str(b, 'preview'), ids, groupAffiliates: b.groupAffiliates as boolean | undefined } });
+  },
+  'POST /api/collect/grouping': async (b) => {
+    if (typeof b.enabled !== 'boolean') throw new Error('체크 여부를 지정해 주세요.');
+    const enabled = b.enabled;
+    const task = await collectTask.updatePreview(report => groupPreview(report, enabled, new PoliteHttp(loadSettings().collect.request_delay_ms)));
+    settingsStore().set('collect.group_affiliates', enabled);
+    return task;
+  },
+  'GET /api/collect/status': () => collectTask.snapshot(),
+  'POST /api/collect/stop': (b) => collectTask.stop(str(b, 'id')),
 
   // ── 브라우저 ──
   'POST /api/browser/test': async () => browserSelfTest(loadSettings()),

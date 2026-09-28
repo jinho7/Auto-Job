@@ -25,7 +25,7 @@ import { checkCurrent, jobWriter, notionClient } from './notion/setup';
 import { parseNotionId } from './settings/store';
 import { openUrl } from './open';
 import { startOrReuseUi } from './server/ui-instance';
-import { closeApplyJobs } from './server/api';
+import { closeApplyJobs, closeCollectTask } from './server/api';
 import type { Server } from 'node:http';
 import { paths, runDir } from './paths';
 import { checkProfile } from './profile/check';
@@ -66,7 +66,7 @@ async function waitForUiShutdown(server: Server): Promise<void> {
     const stop = () => {
       process.removeListener('SIGINT', stop);
       process.removeListener('SIGTERM', stop);
-      void closeApplyJobs().then(() => new Promise<void>(r => server.close(() => r()))).then(resolve, reject);
+      void Promise.all([closeApplyJobs(), closeCollectTask()]).then(() => new Promise<void>(r => server.close(() => r()))).then(resolve, reject);
     };
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);

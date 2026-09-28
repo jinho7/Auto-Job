@@ -17,9 +17,19 @@ import type { JobPosting } from '../jobs/model';
 import { matchRoles } from '../jobs/roles';
 import { SeenStore } from '../jobs/seen';
 import { prepareSearch, type SearchPlan } from '../jobs/search-plan';
+import { agentFor } from '../llm';
 import type { AddResult } from '../notion/jobs';
+import { previewReport } from './preview';
+import { screenPreviewReport } from './preview-screen';
+import { groupPreview } from './affiliate-preview';
+import { combineAffiliatePostings, matchesAffiliatePolicy, verifyAffiliatePolicies, type VerifiedAffiliatePolicy } from '../jobs/affiliates';
 
 export type Outcome =
+  | 'company_unknown'
+  | 'review_pending'
+  | 'role_mismatch'
+  | 'candidate' // 목록 기준 검토 후보: 상세 검증 전
+  | 'deferred' // 사용자가 지정한 미리보기 최대 건수 밖
   | 'registered' // Notion 에 등록함
   | 'would_register' // 미리보기: 등록 대상
   | 'duplicate' // Notion 에 이미 있음
@@ -35,6 +45,11 @@ export type Outcome =
   | 'error';
 
 export const OUTCOME_LABEL: Record<Outcome, string> = {
+  company_unknown: '기업 구분 확인 보류',
+  review_pending: '직무·지원 조건 확인 보류',
+  role_mismatch: '희망 직무와 관련 없음',
+  candidate: '검토 후보 (상세 확인 전)',
+  deferred: '미리보기 건수 제한',
   registered: 'Notion 등록',
   would_register: '등록 대상 (미리보기)',
   duplicate: 'Notion 에 이미 있음',
@@ -51,6 +66,9 @@ export const OUTCOME_LABEL: Record<Outcome, string> = {
 };
 
 export type ReportItem = {
+  id?: string;
+  candidate?: Omit<RawPosting, 'detail'>;
+  matchedRole?: string;
   outcome: Outcome;
   reason?: string;
   source: string;
@@ -69,12 +87,18 @@ export type ReportItem = {
 };
 
 export type CollectReport = {
+  groupAffiliates?: boolean;
+  affiliateGroups?: { policy: VerifiedAffiliatePolicy; memberIds: string[] }[];
+  groupingWarnings?: string[];
+  createdPages?: number;
+  phase?: 'preview' | 'validated';
+  partial?: boolean;
   searchPlan?: SearchPlan;
   startedAt: string;
   finishedAt: string;
   dryRun: boolean;
   notion: 'connected' | 'not_configured';
-  sources: { id: string; label: string; count: number; error?: string }[];
+  sources: { id: string; label: string; count: number; error?: string; scope?: string }[];
   counts: Partial<Record<Outcome, number>>;
   /** AI 사용 요약 */
   ai: { linkSearched: number; linkFound: number; rolesTagged: number; costUsd: number; errors: string[] };
@@ -112,6 +136,10 @@ export type CollectOptions = {
   cwd?: string;
   /** 테스트에서 가짜 AI 로 바꿀 수 있게 */
   runAgent?: RunAgent;
+  signal?: AbortSignal;
+  previewOnly?: boolean;
+  selectedPostings?: RawPosting[];
+  onProgress?: (report: CollectReport) => void;
 };
 
 const EMP_CANON: Record<string, string> = { 신입: '정규직', 정규직: '정규직', 인턴: '인턴', 인턴직: '인턴', '채용연계형 인턴': '인턴', '체험형 인턴': '인턴', 계약직: '계약직' };
@@ -166,39 +194,83 @@ type Candidate = {
 };
 
 export async function runCollect(o: CollectOptions): Promise<CollectReport> {
+  o.signal?.throwIfAborted();
+  if (o.previewOnly && !o.dryRun) throw new Error('목록 미리보기는 Notion에 등록할 수 없습니다.');
+  const baseAgent = o.runAgent ?? agentFor(o.settings);
+  const runAgent: RunAgent = async (args) => {
+    o.signal?.throwIfAborted();
+    return baseAgent({ ...args, signal: AbortSignal.any([args.signal, o.signal].filter((s): s is AbortSignal => !!s)) });
+  };
   const log = o.log ?? (() => {});
   const now = o.now ?? new Date();
   const startedAt = now.toISOString();
-  const searchPlan = o.profile ? await prepareSearch(o.settings, o.profile, { cwd: o.cwd ?? tmpdir(), runAgent: o.runAgent, log }) : undefined;
+  const searchPlan = o.profile && !o.selectedPostings ? await prepareSearch(o.settings, o.profile, { cwd: o.cwd ?? tmpdir(), runAgent, log, signal: o.signal }) : undefined;
+  o.signal?.throwIfAborted();
   // Derived queries apply only to this run. Never replace the user's saved inputs.
   const s = searchPlan ? { ...o.settings, collect: { ...o.settings.collect, keywords: searchPlan.keywords } } : o.settings;
   const items: ReportItem[] = [];
+  let createdPages = 0;
   const ai: CollectReport['ai'] = { linkSearched: 0, linkFound: 0, rolesTagged: 0, costUsd: searchPlan?.costUsd ?? 0, errors: [] };
-  const add = (r: RawPosting, outcome: Outcome, extra: Partial<ReportItem> = {}) =>
+  const add = (r: RawPosting, outcome: Outcome, extra: Partial<ReportItem> = {}) => {
     items.push({ outcome, source: r.source, sourceUrl: r.sourceUrl, company: cleanCompanyName(r.company), title: r.title, deadline: deadlineText(r.deadline), ...extra });
+    if (o.onProgress && !o.previewOnly) {
+      const counts: CollectReport['counts'] = {};
+      for (const item of items) counts[item.outcome] = (counts[item.outcome] ?? 0) + 1;
+      o.onProgress({ phase: 'validated', partial: true, startedAt, finishedAt: '', dryRun: o.dryRun, notion: o.notion ? 'connected' : 'not_configured', sources: [...sources], counts, ai: { ...ai }, items: [...items], searchPlan, createdPages });
+    }
+  };
   const seenKey = (r: RawPosting) => SeenStore.key(r.source, r.sourceId);
 
   // 1. 수집
   const registry = o.collectors ?? COLLECTORS;
-  const enabled = registry.filter((c) => c.status === 'ok' && (o.sources ? o.sources.includes(c.id) : s.collect.sources[c.id]));
+  const enabled = o.selectedPostings ? [] : registry.filter((c) => c.status === 'ok' && (o.sources ? o.sources.includes(c.id) : s.collect.sources[c.id]));
   const ctx: CollectorContext = { settings: s, http: o.http, now, log, browserPage: o.browserPage };
   const sources: CollectReport['sources'] = [];
-  const raw: RawPosting[] = [];
+  const raw: RawPosting[] = o.selectedPostings ? [...o.selectedPostings] : [];
+  const listReport = async () => {
+    const report = await previewReport(raw, sources, { ...o, settings: s }, startedAt);
+    if (searchPlan) { report.searchPlan = searchPlan; report.ai.costUsd = searchPlan.costUsd; }
+    return report;
+  };
   for (const c of enabled) {
+    o.signal?.throwIfAborted();
     log(`▶ ${c.label} 수집`);
+    const scope = ({ saramin: s.collect.saramin.duty_categories, jobkorea: s.collect.jobkorea.duty_categories,
+      catch: s.collect.catch.duty_categories, jasoseol: s.collect.jasoseol.duty_groups } as Record<string, string[]>)[c.id]?.join(', ');
     try {
       const got = await c.collect(ctx);
+      o.signal?.throwIfAborted();
       raw.push(...got);
-      sources.push({ id: c.id, label: c.label, count: got.length });
+      sources.push({ id: c.id, label: c.label, count: got.length, ...(scope ? { scope } : {}) });
     } catch (e) {
-      sources.push({ id: c.id, label: c.label, count: 0, error: (e as Error).message });
+      o.signal?.throwIfAborted();
+      sources.push({ id: c.id, label: c.label, count: 0, error: (e as Error).message, ...(scope ? { scope } : {}) });
       log(`  ❌ ${c.label}: ${(e as Error).message}`);
+    }
+    if (o.previewOnly) {
+      const report = await listReport();
+      o.onProgress?.(report);
+      log(`  목록 저장: 직무 확인 대기 ${report.counts.review_pending ?? 0}건 · 기업 구분 확인 보류 ${report.counts.company_unknown ?? 0}건`);
     }
   }
   for (const id of o.sources ?? []) {
     const c = collectorById(id);
     if (c && c.status !== 'ok') sources.push({ id, label: c.label, count: 0, error: c.note });
   }
+  if (o.previewOnly) {
+    const report = await listReport();
+    await screenPreviewReport(report, { ...o, settings: s, runAgent });
+    await groupPreview(report, s.collect.group_affiliates, o.http);
+    o.signal?.throwIfAborted();
+    report.partial = false; report.finishedAt = new Date().toISOString();
+    return report;
+  }
+  if (o.selectedPostings) sources.push({ id: 'selected', label: '미리보기에서 선택한 공고', count: raw.length });
+
+  // Verify the policy before any writes; a missing/changed source must not silently split a selected group.
+  const grouping = s.collect.group_affiliates ? await verifyAffiliatePolicies(raw, o.http, now) : { verified: [], warnings: [] };
+  o.signal?.throwIfAborted();
+  if (grouping.warnings.length) throw new Error(`계열사 묶음 근거를 다시 확인하지 못해 등록을 중지했습니다. ${grouping.warnings.join(' / ')}`);
 
   // 2. 필터
   const today = ymd(now);
@@ -234,8 +306,11 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
   const search = s.collect.link_search;
   const cands: Candidate[] = [];
   let pendingCount = 0;
-  for (const r0 of unique) {
+  log(`▶ 검색 결과 ${raw.length}건 → 기본 조건과 중복을 거친 ${unique.length}건의 상세 정보·지원 링크 확인`);
+  for (const [index, r0] of unique.entries()) {
+    o.signal?.throwIfAborted();
     if (o.limit && cands.length >= o.limit) break;
+    log(`  상세 확인 ${index + 1}/${unique.length}: ${r0.company}`);
     let r = r0;
     try {
       if (r.detail) {
@@ -249,6 +324,8 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
         };
       }
     } catch (e) {
+      o.signal?.throwIfAborted();
+      if (o.selectedPostings) { add(r, 'error', { reason: `상세 확인 실패: ${(e as Error).message}` }); continue; }
       log(`  ⚠️  ${r.company} 상세 정보 실패: ${(e as Error).message}`);
     }
     if (s.collect.exclude_experienced && r.experience === 'experienced') {
@@ -259,7 +336,8 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
       add(r, dateFilter(r)!); // 상세에서 마감일을 알게 된 경우
       continue;
     }
-    const verdict = classifyCompany(s, r.company, r.sizeHints);
+    if (!employmentMatches(r.employmentTypes, s.collect.employment_types)) { add(r, 'employment'); continue; }
+    const verdict = classifyCompany(s, r.company, r.sizeHints, !!o.selectedPostings);
     if (!verdict.include) {
       add(r, 'company', { reason: verdict.reason, companyTypes: verdict.types });
       continue;
@@ -295,8 +373,9 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
     const byKey = new Map(waiting.map((c) => [seenKey(c.r), c]));
     const { answers, costUsd } = await findApplyLinks(
       waiting.map((c) => ({ key: seenKey(c.r), company: cleanCompanyName(c.r.company), title: c.r.title, deadline: deadlineText(c.r.deadline), sourceUrl: c.r.sourceUrl, candidate: c.pending!.candidate, reason: c.pending!.reason })),
-      { settings: s, cwd: o.cwd ?? tmpdir(), runAgent: o.runAgent, log },
+      { settings: s, cwd: o.cwd ?? tmpdir(), runAgent, log },
     );
+    o.signal?.throwIfAborted();
     ai.linkSearched = waiting.length;
     ai.costUsd += costUsd;
     for (const a of answers) {
@@ -334,8 +413,9 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
     log(`▶ AI 직무 태그 ${toTag.length}건 (${mode === 'review' ? '모든 공고 다시 보기' : '규칙으로 못 단 공고'})`);
     const res = await tagRolesWithAi(
       toTag.map((c) => ({ key: seenKey(c.r), company: cleanCompanyName(c.r.company), title: c.r.title, roleNames: c.r.roleNames, sourceUrl: c.r.sourceUrl, ruleRoles: c.roles })),
-      { settings: s, tags, cwd: o.cwd ?? tmpdir(), runAgent: o.runAgent, log },
+      { settings: s, tags, cwd: o.cwd ?? tmpdir(), runAgent, log },
     );
+    o.signal?.throwIfAborted();
     ai.costUsd += res.costUsd;
     ai.errors.push(...res.errors.map((e) => `직무 태그: ${e}`));
     const byKey = new Map(res.answers.map((a) => [a.key, a]));
@@ -347,8 +427,11 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
     }
   }
 
-  // 7. Notion 등록
+  // 7. Selected affiliates are written as one page, with every member retained in its body.
+  log(o.dryRun ? `▶ 검토할 공고 ${ready.length}건의 미리보기 정리 (Notion에 쓰지 않음)` : `▶ 공고 ${ready.length}건의 Notion 중복 확인·등록`);
+  const prepared: { c: Candidate; posting: JobPosting; base: Partial<ReportItem> }[] = [];
   for (const c of ready) {
+    o.signal?.throwIfAborted();
     const r = c.r;
     const text = roleText(c);
     const posting: JobPosting = {
@@ -361,44 +444,72 @@ export async function runCollect(o: CollectOptions): Promise<CollectReport> {
       companyType: c.verdict.types[0],
       priority: c.verdict.priority,
       source: r.source,
+      sourceUrl: r.sourceUrl,
+      recruitmentRoles: r.roleNames,
     };
     const base: Partial<ReportItem> = { companyTypes: c.verdict.types, roles: posting.roles, employment: posting.employment, applyUrl: c.link, found: c.found };
     if (s.collect.require_role && o.notion && !posting.roles.length) {
       add(r, 'no_role', base);
       continue;
     }
+    prepared.push({ c, posting, base });
+  }
+  const consumed = new Set<(typeof prepared)[number]>();
+  const units: { posting: JobPosting; members: typeof prepared }[] = [];
+  for (const policy of grouping.verified) {
+    const expected = raw.filter(r => matchesAffiliatePolicy(r, policy));
+    const members = prepared.filter(p => expected.some(r => seenKey(r) === seenKey(p.c.r)));
+    members.forEach(m => consumed.add(m));
+    if (members.length !== expected.length || members.some(m => !matchesAffiliatePolicy(m.posting, policy))) {
+      for (const m of members) add(m.c.r, 'error', { ...m.base, reason: '묶음의 일부 공고가 중복이거나 상세 조건 확인을 통과하지 못했습니다. 개별 페이지로 분리 등록하지 않았습니다. 결과를 확인해 다시 선택해 주세요.' });
+      continue;
+    }
+    units.push({ posting: combineAffiliatePostings(members.map(m => m.posting), policy), members });
+  }
+  for (const m of prepared) if (!consumed.has(m)) units.push({ posting: m.posting, members: [m] });
+  for (const { posting, members } of units) {
+    o.signal?.throwIfAborted();
     if (!o.notion) {
-      add(r, 'would_register', { ...base, reason: 'Notion 미연결 — 중복 확인 없이 미리보기' });
+      for (const m of members) add(m.c.r, 'would_register', { ...m.base, reason: 'Notion 미연결 — 중복 확인 없이 미리보기' });
       continue;
     }
     try {
       const res = await o.notion.add(posting, { dryRun: o.dryRun });
-      const key = seenKey(r);
-      if (res.status === 'duplicate') {
-        add(r, 'duplicate', { ...base, reason: res.duplicate.reason, notionUrl: res.duplicate.existing.url });
-        if (!o.dryRun) o.seen.mark(key, { status: 'duplicate', company: r.company, title: r.title, notionUrl: res.duplicate.existing.url });
-      } else if (res.status === 'dry-run') {
-        add(r, 'would_register', { ...base, dropped: res.dropped });
-      } else {
-        add(r, 'registered', { ...base, notionUrl: res.url, dropped: res.dropped });
-        o.seen.mark(key, { status: 'registered', company: r.company, title: r.title, notionUrl: res.url });
-        log(`  ✅ ${r.company} — ${r.title}`);
+      if (res.status === 'created') createdPages++;
+      for (const { c, base } of members) {
+        const r = c.r;
+        if (posting.applicationGroup) base.reason = `${posting.company}: 계열사 ${members.length}개를 한 페이지에 정리`;
+        const key = seenKey(r);
+        if (res.status === 'duplicate') {
+          add(r, 'duplicate', { ...base, reason: res.duplicate.reason, notionUrl: res.duplicate.existing.url });
+          if (!o.dryRun) o.seen.mark(key, { status: 'duplicate', company: r.company, title: r.title, notionUrl: res.duplicate.existing.url });
+        } else if (res.status === 'dry-run') {
+          add(r, 'would_register', { ...base, dropped: res.dropped });
+        } else {
+          add(r, 'registered', { ...base, notionUrl: res.url, dropped: res.dropped });
+          o.seen.mark(key, { status: 'registered', company: r.company, title: r.title, notionUrl: res.url });
+          log(`  ✅ ${r.company} — ${r.title}`);
+        }
       }
     } catch (e) {
-      add(r, 'error', { ...base, reason: (e as Error).message });
+      o.signal?.throwIfAborted();
+      for (const m of members) add(m.c.r, 'error', { ...m.base, reason: (e as Error).message });
     }
   }
+  o.signal?.throwIfAborted();
   if (!o.dryRun) o.seen.save();
 
   const counts: CollectReport['counts'] = {};
   for (const it of items) counts[it.outcome] = (counts[it.outcome] ?? 0) + 1;
-  return { startedAt, finishedAt: new Date().toISOString(), dryRun: o.dryRun, notion: o.notion ? 'connected' : 'not_configured', sources, counts, ai, items, ...(searchPlan ? { searchPlan } : {}) };
+  return { phase: 'validated', partial: false, startedAt, finishedAt: new Date().toISOString(), dryRun: o.dryRun, notion: o.notion ? 'connected' : 'not_configured', sources, counts, ai, items, createdPages, ...(searchPlan ? { searchPlan } : {}) };
 }
 
 /** 사람이 읽는 리포트 */
 export function formatReport(r: CollectReport, opts: { verbose?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push(`공고 수집 ${r.dryRun ? '(미리보기 — Notion 에 쓰지 않음)' : ''}`.trim());
+  if (r.createdPages !== undefined) lines.push(`실제 생성한 Notion 페이지: ${r.createdPages}개`);
+  for (const group of r.affiliateGroups ?? []) lines.push(`${group.policy.title}: 원문 ${group.memberIds.length}개 → 한 페이지`, `  근거: ${group.policy.policyUrl}`);
   if (r.searchPlan) {
     const p = r.searchPlan;
     lines.push('', p.mode === 'profile' ? `내 자료 기반 검색 (연결 파일 ${p.filesRead}개 분석)` : '직접 지정한 조건으로 검색', `  검색어: ${p.keywords.join(', ') || '사이트 직무 분류 사용'}`);

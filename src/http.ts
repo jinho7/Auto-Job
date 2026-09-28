@@ -69,6 +69,7 @@ export class PoliteHttp {
     private readonly delayMs = 1500,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)),
+    private readonly signal?: AbortSignal,
   ) {}
 
   private async throttle(host: string): Promise<void> {
@@ -90,18 +91,23 @@ export class PoliteHttp {
   }
 
   async allowed(url: string): Promise<boolean> {
+    this.signal?.throwIfAborted();
     const u = new URL(url);
-    return isAllowed(await this.rulesFor(u.origin), u.pathname + u.search);
+    const rules = await this.rulesFor(u.origin);
+    this.signal?.throwIfAborted();
+    return isAllowed(rules, u.pathname + u.search);
   }
 
   private async raw(url: string, init: RequestInit): Promise<HttpResponse> {
     const host = new URL(url).host;
     for (let attempt = 0; ; attempt++) {
+      this.signal?.throwIfAborted();
       await this.throttle(host);
+      this.signal?.throwIfAborted();
       const res = await this.fetchImpl(url, {
         ...init,
         headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ko-KR,ko;q=0.9', ...(init.headers as Record<string, string>) },
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.any([AbortSignal.timeout(20_000), ...[this.signal, init.signal].filter((s): s is AbortSignal => !!s)]),
         redirect: 'follow',
       });
       if ((res.status === 429 || res.status >= 500) && attempt < 2) {

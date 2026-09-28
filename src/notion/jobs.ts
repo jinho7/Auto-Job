@@ -2,7 +2,8 @@
 import type { Settings } from '../config';
 import { findDuplicate, sameCompany, type DuplicateHit, type ExistingJob } from '../jobs/dedup';
 import type { JobPosting } from '../jobs/model';
-import { propText, type DataSource, type NotionClient, type NotionProperty } from './client';
+import { AFFILIATE_POLICIES } from '../jobs/affiliates';
+import { blockText, propText, type DataSource, type NotionClient, type NotionProperty } from './client';
 import { optionsOf } from './mapping';
 
 type N = Settings['notion'];
@@ -78,6 +79,27 @@ export function sectionBlocks(sections: string[]): unknown[] {
   ]);
 }
 
+/** The page keeps a distinct company, deadline and application URL for every affiliate. */
+export function affiliateBlocks(p: JobPosting): unknown[] {
+  if (!p.applicationGroup) return [];
+  const { policy, members } = p.applicationGroup;
+  const block = (type: string, content: string) => ({ object: 'block', type, [type]: { rich_text: text(content) } });
+  const link = (label: string, url: string) => ({ object: 'block', type: 'paragraph', paragraph: {
+    rich_text: [{ type: 'text', text: { content: label, link: { url } } }],
+  } });
+  return [
+    block('heading_2', '계열사별 공고'),
+    block('paragraph', `계열사 간 동시 지원 불가: 아래 회사와 직무 중 지원할 대상을 먼저 선택하세요. ${policy.exception}`),
+    block('paragraph', `공식 안내: ${policy.quote}\n확인일: ${policy.checkedAt.slice(0, 10)}`),
+    link('중복 지원 규정 확인', policy.policyUrl), link('해당 채용 회차 공식 안내', policy.campaignUrl),
+    ...members.flatMap(m => [block('heading_3', m.company), block('paragraph', m.title ?? ''),
+      block('bulleted_list_item', `모집 직무: ${(m.recruitmentRoles?.length ? m.recruitmentRoles : m.roles).join(', ') || '원문 확인'}`),
+      block('bulleted_list_item', `마감: ${m.deadline?.date ?? policy.deadline} ${m.deadline?.time ?? policy.deadlineTime} (한국 시간)`),
+      link('지원 페이지', m.link), ...(m.sourceUrl ? [link('공고 원문', m.sourceUrl)] : []),
+    ]),
+  ];
+}
+
 export function toExisting(pages: Awaited<ReturnType<NotionClient['queryPages']>>, n: N): ExistingJob[] {
   return pages.map((pg) => ({
     id: pg.id,
@@ -91,7 +113,7 @@ export function toExisting(pages: Awaited<ReturnType<NotionClient['queryPages']>
 export type AddResult =
   | { status: 'created'; pageId: string; url: string; dropped: string[]; usedTemplate: boolean; templateApplied?: boolean }
   | { status: 'duplicate'; duplicate: DuplicateHit }
-  | { status: 'dry-run'; properties: Record<string, unknown>; dropped: string[]; usedTemplate: boolean };
+  | { status: 'dry-run'; properties: Record<string, unknown>; dropped: string[]; usedTemplate: boolean; children?: unknown[] };
 
 /** Notion 에 공고를 올리는 도구. 기존 페이지 목록은 한 번 읽어 두고 새로 만든 것도 바로 반영한다. */
 export class NotionJobWriter {
@@ -116,7 +138,22 @@ export class NotionJobWriter {
   }
 
   async loadExisting(): Promise<ExistingJob[]> {
-    this.existing ??= toExisting(await this.client.queryPages(this.ds.id), this.settings.notion);
+    if (!this.existing) {
+      const existing = toExisting(await this.client.queryPages(this.ds.id), this.settings.notion);
+      const aliases: ExistingJob[] = [];
+      for (const page of existing) {
+        const policy = AFFILIATE_POLICIES.find(p => p.title === page.company && page.deadline.slice(0, 10) === p.deadline);
+        if (!policy) continue;
+        // Reload real members from the body after a restart; the shared group name alone is not enough.
+        let inMembers = false;
+        for (const block of await this.client.listAllBlocks(page.id)) {
+          if (block.type === 'heading_2') inMembers = blockText(block) === '계열사별 공고';
+          const company = blockText(block);
+          if (inMembers && block.type === 'heading_3' && policy.companies.some(c => sameCompany(c, company))) aliases.push({ ...page, company, link: '' });
+        }
+      }
+      this.existing = [...existing, ...aliases];
+    }
     return this.existing;
   }
 
@@ -135,25 +172,31 @@ export class NotionJobWriter {
 
   async add(p: JobPosting, opts: { dryRun?: boolean } = {}): Promise<AddResult> {
     if (!p.company.trim()) throw new Error('회사명이 비어 있습니다');
-    const dup = findDuplicate(p, await this.loadExisting());
+    const existing = await this.loadExisting();
+    const dup = findDuplicate(p, existing) ?? p.applicationGroup?.members.map(m => findDuplicate(m, existing)).find(Boolean);
     if (dup) return { status: 'duplicate', duplicate: dup };
 
     const { properties, dropped } = buildProperties(p, this.settings.notion, this.ds, decideStatus(this.settings, p));
     const template = await this.pickTemplate();
-    if (opts.dryRun) return { status: 'dry-run', properties, dropped, usedTemplate: !!template };
+    const members = affiliateBlocks(p);
+    const children = [...(template ? [] : sectionBlocks(this.settings.notion.page_sections)), ...members];
+    if (opts.dryRun) return { status: 'dry-run', properties, dropped, usedTemplate: !!template, ...(members.length ? { children } : {}) };
 
     const page = await this.client.createPage({
       parent: { type: 'data_source_id', data_source_id: this.ds.id },
       properties,
-      ...(template ? { template } : { children: sectionBlocks(this.settings.notion.page_sections) }),
+      ...(template ? { template } : { children: children.slice(0, 100) }),
     });
     this.existing!.push({ id: page.id, url: page.url, company: p.company, link: p.link, deadline: p.deadline?.date ?? '' });
+    for (const member of p.applicationGroup?.members ?? []) this.existing!.push({ id: page.id, url: page.url, company: member.company, link: member.link, deadline: member.deadline?.date ?? '' });
     let templateApplied: boolean | undefined;
     if (template) {
       // 템플릿에 들어 있는 속성 값(제목 "회사명", 기본 상태 등)이 우리가 넣은 값을 덮을 수 있어서, 적용이 끝난 뒤 한 번 더 넣는다
       templateApplied = await this.waitForTemplate(page.id);
       await this.client.updatePage(page.id, properties);
     }
+    const append = template ? members : children.slice(100);
+    if (append.length) await this.client.appendBlocks(page.id, append);
     return { status: 'created', pageId: page.id, url: page.url, dropped, usedTemplate: !!template, templateApplied };
   }
 }

@@ -1,5 +1,5 @@
 // 실제 환경(설정, 브라우저, Notion, 기록 파일)을 묶어 수집을 한 번 실행한다. CLI 와 설정 화면이 같이 쓴다.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Page } from 'playwright-core';
 import { BrowserSession } from '../browser/session';
@@ -15,29 +15,42 @@ import { loadSchema } from '../profile/schema';
 import { ProfileStore } from '../profile/store';
 import { SettingsStore } from '../settings/store';
 import { formatReport, runCollect, type CollectReport, type NotionSink } from './collect';
+import { selectedFromPreview, withSelectedDetails, type PreviewSelection } from './selection';
 
-export type CollectRunOptions = { dryRun: boolean; sources?: string[]; limit?: number; log?: (m: string) => void };
+export type CollectRunOptions = { dryRun: boolean; sources?: string[]; limit?: number; log?: (m: string) => void; signal?: AbortSignal;
+  selection?: PreviewSelection; onProgress?: (result: { report: CollectReport; dir: string }) => void };
+
+export function saveCollectReport(dir: string, report: CollectReport): void {
+  writeFileSync(path.join(dir, 'report.json.tmp'), JSON.stringify(report, null, 1), { mode: 0o600 });
+  renameSync(path.join(dir, 'report.json.tmp'), path.join(dir, 'report.json'));
+  writeFileSync(path.join(dir, 'report.txt'), formatReport(report, { verbose: true }), { mode: 0o600 });
+}
 
 export async function collectNow(opts: CollectRunOptions): Promise<{ report: CollectReport; dir: string }> {
   const log = opts.log ?? console.log;
   const settings = loadSettings();
+  if (opts.selection?.groupAffiliates !== undefined) settings.collect.group_affiliates = opts.selection.groupAffiliates;
   const profile = new ProfileStore(paths.profileMe, loadSchema(paths.profileSchema)).toJSON();
+  const selected = opts.selection ? selectedFromPreview(opts.selection) : undefined;
 
   let session: BrowserSession | null = null;
   const pages: Record<string, Page> = {};
   const tab = (name: string) => async () => {
+    opts.signal?.throwIfAborted();
     session ??= await BrowserSession.open(settings);
     pages[name] ??= name === 'collect' ? session.page : await session.context.newPage();
     return pages[name];
   };
 
   let notion: NotionSink | null = null;
+  opts.signal?.throwIfAborted();
+  log('▶ 수집 설정과 Notion 중복 확인 연결을 준비합니다');
   const n = settings.notion;
   if (getSecret('NOTION_TOKEN') && (n.data_source_id || n.database_id)) {
     const { writer, ds } = await jobWriter(new SettingsStore(paths.settings));
     notion = {
       tags: optionsOf(ds.properties[n.fields.roles ?? '']),
-      add: (p, o) => writer.add(p, o),
+      add: (p, o) => { opts.signal?.throwIfAborted(); return writer.add(p, { dryRun: opts.dryRun || o.dryRun }); },
       check: async (p) => findDuplicate(p, await writer.loadExisting()),
     };
     log(`Notion: ${ds.title} (직무 태그 ${notion.tags.length}개)`);
@@ -47,11 +60,14 @@ export async function collectNow(opts: CollectRunOptions): Promise<{ report: Col
 
   const dir = runDir(opts.dryRun || !notion ? 'collect-preview' : 'collect');
   mkdirSync(dir, { recursive: true });
+  if (selected && !notion && !opts.dryRun) throw new Error('Notion 연결을 확인한 뒤 선택한 공고를 다시 등록해 주세요.');
+  const http = new PoliteHttp(settings.collect.request_delay_ms, undefined, undefined, opts.signal);
+  const selectedPostings = selected ? withSelectedDetails(selected, { settings, http, now: new Date(), log, browserPage: tab('collect') }) : undefined;
   try {
     const report = await runCollect({
       settings,
       profile,
-      http: new PoliteHttp(settings.collect.request_delay_ms),
+      http,
       browserPage: tab('collect'),
       linkPage: tab('link'),
       seen: new SeenStore(path.join(paths.data, 'seen.json')),
@@ -61,9 +77,12 @@ export async function collectNow(opts: CollectRunOptions): Promise<{ report: Col
       limit: opts.limit,
       cwd: dir,
       log,
+      signal: opts.signal,
+      previewOnly: (opts.dryRun || !notion) && !selected,
+      selectedPostings,
+      onProgress: report => { saveCollectReport(dir, report); opts.onProgress?.({ report, dir }); },
     });
-    writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 1), { mode: 0o600 });
-    writeFileSync(path.join(dir, 'report.txt'), formatReport(report, { verbose: true }), { mode: 0o600 });
+    saveCollectReport(dir, report);
     return { report, dir };
   } finally {
     const s = session as BrowserSession | null;

@@ -12,7 +12,7 @@ function nameHas(name: string, keyword: string): boolean {
   return name.replace(/\s+/g, '').includes(k.replace(/\s+/g, ''));
 }
 
-export function classifyCompany(settings: Settings, company: string, hints: string[] = []): CompanyVerdict {
+export function classifyCompany(settings: Settings, company: string, hints: string[] = [], requireEvidence = false): CompanyVerdict {
   const o = settings.overrides;
   const priorityOverride = o.priority.some((c) => sameCompany(c, company));
   if (o.always_exclude.some((c) => sameCompany(c, company))) return { types: [], include: false, priority: false, reason: '항상 제외할 회사' };
@@ -23,7 +23,7 @@ export function classifyCompany(settings: Settings, company: string, hints: stri
     if ((t.companies ?? []).some((c) => sameCompany(c, company))) {
       types.add(type);
       why.push(`${type} 목록`);
-    } else {
+    } else if (!requireEvidence) {
       const kw = (t.name_keywords ?? []).find((k) => nameHas(company, k));
       if (kw) {
         types.add(type);
@@ -41,7 +41,8 @@ export function classifyCompany(settings: Settings, company: string, hints: stri
   const list = [...types];
   const priority = priorityOverride || list.some((t) => settings.company_types[t]?.priority);
   if (o.always_include.some((c) => sameCompany(c, company))) return { types: list, include: true, priority, reason: '항상 포함할 회사' };
-  if (!list.length) return { types: [], include: true, priority, reason: '기업 구분을 알 수 없어 포함' };
+  if (!list.length) return { types: [], include: !requireEvidence || Object.values(settings.company_types).every(t => t.include), priority,
+    reason: requireEvidence ? '기업 구분을 확인할 근거 없음' : '기업 구분을 알 수 없어 포함' };
   const include = list.some((t) => settings.company_types[t]?.include);
   return { types: list, include, priority, reason: why.join(', ') };
 }

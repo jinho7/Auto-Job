@@ -104,6 +104,7 @@ async function listPage(http: PoliteHttp, condition: Record<string, string>, pag
 }
 
 export const jobkorea: Collector = {
+  detail: (ctx, posting) => jobkoreaDetail(ctx.http, posting.sourceUrl),
   id: 'jobkorea',
   label: '잡코리아',
   method: 'http',
@@ -121,7 +122,8 @@ export const jobkorea: Collector = {
       if (!picked.length) throw new Error('설정한 잡코리아 직무 분류를 사이트에서 찾지 못했습니다');
       categories = picked;
     }
-    const keywords: (string | null)[] = settings.collect.keywords.length ? settings.collect.keywords : [null];
+    // A selected native category is the search scope; do not fan it out into every AI keyword.
+    const keywords: (string | null)[] = wanted.length ? [null] : settings.collect.keywords.length ? settings.collect.keywords : [null];
     if (!wanted.length && !settings.collect.keywords.length) throw new Error('검색 키워드나 잡코리아 직무 분류가 필요합니다');
 
     const out = new Map<string, RawPosting>();
@@ -150,7 +152,7 @@ export const jobkorea: Collector = {
 
 async function jobkoreaDetail(http: PoliteHttp, url: string): Promise<Partial<RawPosting>> {
   const res = await http.request(url);
-  if (res.status !== 200) return {};
+  if (res.status !== 200) throw new Error(`잡코리아 상세 확인 실패 (${res.status})`);
   const d = parseJobkoreaDetail(res.text);
   return { sizeHints: d.sizeHints, ...(d.homepageUrl ? { applyUrl: d.homepageUrl } : {}) };
 }

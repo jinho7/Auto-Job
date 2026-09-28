@@ -46,6 +46,7 @@ export interface Collector {
   status: CollectorStatus;
   note: string;
   collect(ctx: CollectorContext): Promise<RawPosting[]>;
+  detail?(ctx: CollectorContext, posting: RawPosting): Promise<Partial<RawPosting>>;
 }
 
 /** YYYY-MM-DD (현지 날짜) */

@@ -751,17 +751,36 @@ function sourcesPage() {
   );
   drawJobkorea();
 
+  const nativeCategoryCard = (source, label) => {
+    const box = h('div'), key = `collect.${source}.duty_categories`;
+    const draw = () => box.replaceChildren(chipEditor(key, { placeholder: '직무 분류 이름', emptyText: '비어 있으면 검색어 사용' }),
+      h('button', { class: 'btn', onclick: async () => {
+        try {
+          const { categories } = await run(() => api('GET', `/api/collect/${source}-duty-categories`));
+          const chosen = new Set(state.settings.collect[source].duty_categories);
+          const list = h('div', { class: 'checks' }, categories.map(c => h('label', null, h('input', { type: 'checkbox', value: c.name, checked: chosen.has(c.name) }), c.name)));
+          box.replaceChildren(list, h('button', { class: 'btn primary', onclick: async () => {
+            await setSetting(key, [...list.querySelectorAll('input:checked')].map(i => i.value)); draw();
+          } }, '저장'), h('button', { class: 'btn', onclick: draw }, '취소'));
+        } catch { draw(); }
+      } }, `${label} 직무 분류 목록에서 고르기`));
+    draw();
+    return card(`${label} 직무 분류`, h('p', { class: 'muted small' }, '사이트의 직무 필터로 먼저 범위를 좁힙니다. 분류를 고르면 키워드마다 반복 검색하지 않습니다.'), box);
+  };
+
   return page('수집 사이트', '공고를 모을 사이트와 수집 방식을 정합니다. 모든 사이트는 robots.txt 가 허용하는 범위에서, 정직한 이름으로, 요청 사이에 간격을 두고 가져옵니다.',
     card(null, h('table', { class: 'grid' },
       h('thead', null, h('tr', null, h('th', { class: 'center' }, '사용'), h('th', null, '사이트'), h('th', null, '상태'), h('th', null, '설명'))),
       h('tbody', null, rows))),
     card('수집 범위',
       textSetting('마감 기간 (일)', 'collect.lookahead_days', { type: 'number', hint: '마감이 오늘부터 이 기간 안인 공고만 모읍니다. 상시 채용은 포함' }),
-      textSetting('키워드당 최대 공고 수', 'collect.max_per_keyword', { type: 'number', hint: '사이트마다 검색 결과를 키워드당 이만큼까지 봅니다' }),
+      textSetting('직무 분류·검색어당 최대 공고 수', 'collect.max_per_keyword', { type: 'number', hint: '선택한 직무 분류마다 이 범위의 목록을 확인합니다. 분류가 없는 사이트는 검색어 기준입니다.' }),
       textSetting('요청 간격 (ms)', 'collect.request_delay_ms', { type: 'number', hint: '같은 사이트에 보내는 요청 사이 간격. 사이트에 부담을 주지 않도록 1500 이상을 권장합니다' }),
     ),
+    nativeCategoryCard('saramin', '사람인'),
+    nativeCategoryCard('catch', '캐치'),
     card('자소설닷컴 직무 분류', h('p', { class: 'muted small', style: 'margin-top:0' }, '자소설닷컴 채용 달력에서 이 직무 분류의 공고만 가져옵니다.'), dutyBox),
-    card('잡코리아 직무 분류', h('p', { class: 'muted small', style: 'margin-top:0' }, '잡코리아 채용정보에서 이 직무 대분류의 공고만 가져옵니다. 비우면 전체 직무에서 검색 키워드로 찾습니다.'), jobkoreaBox),
+    card('잡코리아 직무 분류', h('p', { class: 'muted small', style: 'margin-top:0' }, '이 직무 분류로 먼저 좁혀서 가져옵니다. 분류가 있으면 키워드별 검색을 반복하지 않습니다.'), jobkoreaBox),
     card('원티드 직군',
       h('p', { class: 'muted small', style: 'margin-top:0' }, '원티드 채용 목록 주소의 직군 번호입니다 (wanted.co.kr/wdlist/번호). 비우면 전체 직군에서 공고 제목에 검색 키워드가 있는 것만 모읍니다.'),
       chipEditor('collect.wanted.job_group_ids', { placeholder: '직군 번호', emptyText: '(비어 있음)' })),
@@ -1167,44 +1186,182 @@ function collectPage() {
   const usable = state.meta.collectors.filter((c) => c.status === 'ok');
   const picks = h('div', { class: 'checks' }, usable.map((c) => h('label', null, h('input', { type: 'checkbox', value: c.id, checked: !!s.collect.sources[c.id] }), c.label)));
   const limit = h('input', { type: 'number', min: '1', placeholder: '제한 없음', style: 'max-width:140px' });
-  const out = h('div');
+  const out = h('div'), progress = h('div', { 'aria-live': 'polite' });
   if (lastCollect) drawCollect(out, lastCollect);
+  let current = null, renderedKey = '', pollTimer, groupingBusy = false;
+  const preview = h('button', { class: 'btn', type: 'button', disabled: true, onclick: () => start(true) }, '미리보기 (Notion 에 쓰지 않음)');
+  const grouping = h('input', { type: 'checkbox', checked: !!s.collect.group_affiliates, onchange: async () => {
+    const enabled = grouping.checked;
+    groupingBusy = true; grouping.disabled = true; preview.disabled = true;
+    clearTimeout(pollTimer);
+    groupingHint.textContent = '공식 중복 지원 규정과 채용 회차를 확인하고 있습니다…';
+    try {
+      const task = await api('POST', '/api/collect/grouping', { enabled });
+      s.collect.group_affiliates = enabled; groupingBusy = false; renderedKey = ''; update(task);
+    } catch (e) { grouping.checked = !!s.collect.group_affiliates; toast(e.message, true); }
+    finally { groupingBusy = false; groupingHint.textContent = groupingHelp; void poll(); }
+  } });
+  const groupingHelp = '공식 안내에서 중복 지원 금지와 같은 채용 회차가 확인된 계열사만 묶습니다. 현재 CJ 2026년 하반기 신입 공채를 지원합니다. 기존 목록에도 바로 적용됩니다.';
+  const groupingHint = h('div', { class: 'hint' }, groupingHelp);
 
-  const start = async (dryRun, btn) => {
+  const stop = h('button', { class: 'btn', type: 'button', hidden: true, onclick: async () => {
+    try { update(await api('POST', '/api/collect/stop', { id: current.id })); }
+    catch (e) { toast(e.message, true); }
+  } }, '수집 중지');
+
+  function update(task) {
+    current = task;
+    const active = ['running', 'stopping'].includes(task.status);
+    preview.disabled = active || groupingBusy;
+    grouping.disabled = active || groupingBusy;
+    stop.hidden = !active; stop.disabled = task.status === 'stopping';
+    stop.textContent = task.status === 'stopping' ? '중지하는 중…' : '수집 중지';
+    picks.querySelectorAll('input').forEach(i => i.disabled = active);
+    limit.disabled = active;
+    if (task.status === 'idle') { progress.replaceChildren(); return; }
+    const seconds = Math.max(0, Math.floor(((task.finishedAt ? Date.parse(task.finishedAt) : Date.now()) - Date.parse(task.startedAt)) / 1000));
+    const label = { running: '수집 중', stopping: '중지하는 중', completed: '완료', stopped: '중지됨', error: '수집 실패' }[task.status];
+    progress.replaceChildren(card(`${task.dryRun ? '미리보기' : '수집'} · ${label} · ${Math.floor(seconds / 60)}분 ${seconds % 60}초`,
+      task.dryRun ? h('p', { class: 'small' }, 'Notion에 쓰지 않습니다. 결과를 확인한 뒤 등록할 수 있습니다.') : null,
+      task.error ? h('p', { class: 'notice bad' }, task.error) : null,
+      h('pre', { class: 'code', style: 'max-height:260px;overflow:auto;white-space:pre-wrap' }, task.log.slice(-20).join('\n'))));
+    const result = task.result ?? task.preview;
+    const key = result ? JSON.stringify([task.id, task.status, result.dir, result.report.partial, result.report.sources.length, result.report.counts, result.report.groupAffiliates, result.report.affiliateGroups]) : '';
+    if (result && renderedKey !== key) {
+      renderedKey = key; lastCollect = result;
+      drawCollect(out, result, { canRegister: !active && !!state.secrets.NOTION_TOKEN.set && !!s.notion.data_source_id, register: registerSelected });
+      if (task.preview && result.report.phase !== 'preview') out.append(h('button', { class: 'btn', onclick: () => {
+        drawCollect(out, task.preview, { canRegister: !active && !!state.secrets.NOTION_TOKEN.set && !!s.notion.data_source_id, register: registerSelected });
+      } }, '검토 후보 목록 다시 보기'));
+    }
+  }
+  async function poll() {
+    if (!progress.isConnected) return;
+    try { update(await api('GET', '/api/collect/status')); }
+    catch (e) { progress.replaceChildren(h('div', { class: 'notice bad' }, `진행 상태를 확인하지 못했습니다: ${e.message}. 연결되면 다시 확인합니다.`)); }
+    if (progress.isConnected) pollTimer = setTimeout(poll, 1500);
+  }
+  async function start(dryRun) {
     const sources = [...picks.querySelectorAll('input:checked')].map((i) => i.value);
     if (!sources.length) return toast('수집할 사이트를 골라 주세요', true);
     if (!dryRun && !confirm('수집한 공고를 Notion 에 등록할까요? (중복은 넣지 않습니다)')) return;
-    const buttons = btn.parentElement.querySelectorAll('button');
-    buttons.forEach((b) => (b.disabled = true));
-    const label = btn.textContent;
-    btn.textContent = '수집 중… (사이트 수에 따라 몇 분 걸릴 수 있습니다)';
+    preview.disabled = true;
+    clearTimeout(pollTimer);
     try {
-      lastCollect = await run(() => api('POST', '/api/collect/run', { dryRun, sources, limit: Number(limit.value) || undefined }));
-      drawCollect(out, lastCollect);
-    } finally {
-      buttons.forEach((b) => (b.disabled = false));
-      btn.textContent = label;
-    }
-  };
+      update(await api('POST', '/api/collect/start', { dryRun, sources, limit: Number(limit.value) || undefined }));
 
+    } catch (e) { toast(e.message, true); }
+    finally { void poll(); }
+  }
+  async function registerSelected(dir, ids, groupAffiliates, pageCount) {
+    if (groupingBusy) return toast('계열사 묶음 확인이 끝난 뒤 등록해 주세요.', true);
+    if (!ids.length || ids.length > 50) return toast('한 번에 공고 1~50개를 선택해 주세요.', true);
+    if (!confirm(`선택한 ${ids.length}개 공고를 최대 ${pageCount}개 페이지로 Notion에 등록할까요? 상세 내용과 지원 링크를 다시 확인하고 중복이나 조건에 맞지 않는 공고는 제외합니다.${groupAffiliates ? ' 계열사 묶음의 일부가 확인되지 않으면 해당 묶음은 등록을 보류합니다.' : ''}`)) return;
+    clearTimeout(pollTimer);
+    try { update(await api('POST', '/api/collect/selected', { preview: dir.split('/').pop(), ids, groupAffiliates })); }
+    catch (e) { toast(e.message, true); }
+    finally { void poll(); }
+  }
   const warn = [];
   if (!state.searchProfileReady) warn.push('맞춤 검색을 위해 내 정보에 희망 직무·경험을 입력하거나 소재 폴더를 연결해 주세요. 직접 지정한 검색어·사이트 직무 분류만으로도 검색할 수 있습니다.');
   if (!(state.secrets.NOTION_TOKEN.set && s.notion.data_source_id)) warn.push('Notion 이 연결되지 않아 미리보기만 할 수 있습니다.');
-
-  return page('공고 수집', '내 정보와 연결한 자료를 읽어 맞춤 검색어를 정한 뒤, 켜 둔 사이트에서 공고를 모읍니다. 설정한 경력·고용형태·마감·기업 구분으로 거르고 실제 지원 페이지를 확인합니다.',
+  setTimeout(poll, 0);
+  return page('공고 수집', '사이트의 직무 필터로 범위를 좁힌 뒤 기업 조건과 희망 직무를 대조합니다. 후보를 고르면 선택한 공고만 상세 내용과 지원 링크를 확인한 뒤 Notion에 등록합니다. 모은 목록은 중지하거나 앱을 다시 켜도 남습니다.',
     warn.length ? h('div', { class: 'notice' }, h('ul', { style: 'margin:0' }, warn.map((w) => h('li', null, w)))) : null,
     card(null,
       h('div', { class: 'field' }, h('label', null, '사이트'), picks),
-      h('div', { class: 'field' }, h('label', null, '최대 건수'), limit, h('div', { class: 'hint' }, '처음에는 5건 정도로 시험해 보세요')),
-      h('div', { class: 'row', style: 'margin-top:10px' },
-        h('button', { class: 'btn', type: 'button', onclick: (e) => start(true, e.target) }, '미리보기 (Notion 에 쓰지 않음)'),
-        h('button', { class: 'btn primary', type: 'button', onclick: (e) => start(false, e.target) }, '수집하고 Notion 에 등록')),
-    ),
-    out,
-  );
+      h('div', { class: 'field' }, h('label', null, '표시할 후보 수'), limit, h('div', { class: 'hint' }, '비워 두면 모든 후보를 표시합니다. 사이트 목록 검색 범위는 동일합니다.')),
+      h('div', { class: 'field' }, h('label', null, grouping, ' 계열사 간 중복 지원 불가 시 한 페이지 안에 정리하기'), groupingHint),
+      h('div', { class: 'row', style: 'margin-top:10px' }, preview, stop)),
+    progress, out);
 }
 
-function drawCollect(box, r) {
+const reviewStates = new Map();
+function drawPreviewCandidates(result, options) {
+  const original = result.report.items.filter(item => ['candidate', 'company_unknown', 'review_pending', 'role_mismatch'].includes(item.outcome));
+  const candidates = original.filter(item => item.outcome === 'candidate');
+  const groupedIds = new Set(), groups = [];
+  for (const group of result.report.groupAffiliates ? result.report.affiliateGroups || [] : []) {
+    const members = candidates.filter(item => group.memberIds.includes(item.id));
+    if (members.length < 2) continue;
+    members.forEach(item => groupedIds.add(item.id));
+    groups.push({ outcome: 'candidate', company: group.policy.title, title: `계열사 ${members.length}개 → Notion 1페이지`,
+      deadline: `${group.policy.deadline} ${group.policy.deadlineTime}`, reason: '공식 안내에서 계열사 간 동시 지원 불가 확인',
+      companyTypes: [...new Set(members.flatMap(m => m.companyTypes || []))], matchedRole: [...new Set(members.map(m => m.matchedRole).filter(Boolean))].join(', '),
+      sourceUrl: group.policy.campaignUrl, policy: group.policy, members });
+  }
+  const rows = [...groups, ...original.filter(item => !groupedIds.has(item.id))];
+  const rowIds = item => item.members ? item.members.map(m => m.id) : [item.id];
+  const candidatePages = rows.filter(item => item.outcome === 'candidate').length;
+  let review = reviewStates.get(result.dir);
+  if (!review) { review = { ids: new Set(), query: '', page: 0, size: 'all' }; reviewStates.set(result.dir, review); }
+  const validIds = new Set(candidates.map(item => item.id));
+  review.ids = new Set([...review.ids].filter(id => validIds.has(id)));
+  // A group becomes one selection. Clear partial prior selections instead of silently adding affiliates.
+  for (const group of groups) if (!rowIds(group).every(id => review.ids.has(id))) rowIds(group).forEach(id => review.ids.delete(id));
+  const query = h('input', { type: 'search', placeholder: '회사명 또는 공고명으로 찾기', value: review.query });
+  const size = h('select', { 'aria-label': '검토 상태' },
+    h('option', { value: 'all' }, `직무 검토 후보 ${candidatePages}개${groups.length ? ' 묶음 포함' : ''}`),
+    h('option', { value: 'pending' }, `확인 보류 ${rows.filter(item => ['company_unknown', 'review_pending'].includes(item.outcome)).length}개`),
+    h('option', { value: 'excluded' }, `직무 관련 없음 ${rows.filter(item => item.outcome === 'role_mismatch').length}개`));
+  size.value = review.size;
+  const table = h('div', { style: 'overflow-x:auto' }), pager = h('div', { class: 'row' });
+  const filteredRows = () => rows.filter(item => (item.company + ' ' + item.title + ' ' + (item.roles || []).join(' ') + ' ' + (item.members || []).map(m => `${m.company} ${m.title} ${m.matchedRole || ''}`).join(' ')).toLowerCase().includes(review.query.toLowerCase()))
+    .filter(item => review.size === 'all' ? item.outcome === 'candidate' : review.size === 'pending' ? ['company_unknown', 'review_pending'].includes(item.outcome) : item.outcome === 'role_mismatch');
+  const selectAll = h('button', { class: 'btn', type: 'button', onclick: () => {
+    const ids = filteredRows().filter(item => item.outcome === 'candidate').flatMap(rowIds);
+    const selected = new Set([...review.ids, ...ids]);
+    if (selected.size > 50) return toast(`선택 대상이 ${selected.size}개입니다. 한 번에 최대 50개까지 선택할 수 있으니 검색으로 범위를 줄여 주세요.`, true);
+    review.ids = selected; draw();
+  } }, '전체 선택');
+  const clearSelection = h('button', { class: 'btn', type: 'button', onclick: () => { review.ids.clear(); draw(); } }, '전체 선택 해제');
+  const selectedPages = () => rows.filter(item => item.outcome === 'candidate' && rowIds(item).some(id => review.ids.has(id))).length;
+  const save = h('button', { class: 'btn primary', onclick: () => options.register?.(result.dir, [...review.ids], !!result.report.groupAffiliates, selectedPages()) });
+  const refreshButton = () => {
+    save.textContent = `선택한 공고 ${review.ids.size}개 → ${selectedPages()}페이지 확인 후 Notion 등록`;
+    save.disabled = !options.canRegister || !review.ids.size || review.ids.size > 50;
+    const selectableIds = filteredRows().filter(item => item.outcome === 'candidate').flatMap(rowIds);
+    selectAll.textContent = review.query ? '검색 결과 전체 선택' : '전체 선택';
+    selectAll.disabled = !selectableIds.length || selectableIds.every(id => review.ids.has(id));
+    clearSelection.disabled = !review.ids.size;
+  };
+  const draw = () => {
+    const filtered = filteredRows();
+    const pages = Math.max(1, Math.ceil(filtered.length / 50)); review.page = Math.min(review.page, pages - 1);
+    table.replaceChildren(h('table', { class: 'grid' },
+      h('thead', null, h('tr', null, ...['선택', '마감', '회사 / 공고', '기업 구분 · 직무', '원문'].map(label => h('th', null, label)))),
+      h('tbody', null, ...filtered.slice(review.page * 50, (review.page + 1) * 50).map(item => h('tr', null,
+        h('td', null, item.outcome !== 'candidate' ? '—' : h('input', { type: 'checkbox', 'aria-label': `${item.company} 공고 선택`, checked: rowIds(item).every(id => review.ids.has(id)), onchange: e => {
+          if (e.target.checked && new Set([...review.ids, ...rowIds(item)]).size > 50) { e.target.checked = false; return toast('한 번에 최대 50개까지 선택할 수 있습니다.', true); }
+          rowIds(item).forEach(id => e.target.checked ? review.ids.add(id) : review.ids.delete(id)); refreshButton();
+        } })),
+        h('td', { class: 'small' }, item.deadline),
+        h('td', null, h('strong', null, item.company), h('div', { class: 'small' }, item.title), h('div', { class: 'muted small' }, item.reason),
+          item.members ? h('details', null, h('summary', null, '계열사별 공고와 묶음 근거 보기'),
+            h('p', { class: 'small' }, h('a', { href: item.policy.policyUrl, target: '_blank', rel: 'noopener' }, '공식 중복 지원 규정'), ` · 확인일 ${item.policy.checkedAt.slice(0, 10)}`),
+            ...item.members.map(m => h('div', { class: 'small', style: 'margin:12px 0;white-space:normal' }, h('strong', null, m.company), h('div', null, `${m.title} · ${m.deadline}`),
+              h('div', null, (m.candidate?.roleNames || []).join(', ') || m.matchedRole || '원문 확인'),
+              h('a', { href: m.sourceUrl, target: '_blank', rel: 'noopener' }, '공고 보기')))) : null),
+        h('td', { class: 'small' }, item.companyTypes?.join(', ') || '기업 구분 미확인', h('div', { class: 'muted small' }, item.matchedRole || '모집 직무 확인 전')),
+        h('td', null, h('a', { href: item.sourceUrl, target: '_blank', rel: 'noopener' }, '공고 보기')))))));
+    pager.replaceChildren(h('span', { class: 'small' }, `${filtered.length}개 공고 · ${review.page + 1}/${pages}페이지`),
+      h('button', { class: 'btn', disabled: review.page === 0, onclick: () => { review.page--; draw(); } }, '이전'),
+      h('button', { class: 'btn', disabled: review.page + 1 >= pages, onclick: () => { review.page++; draw(); } }, '다음'));
+    refreshButton();
+  };
+  query.oninput = () => { review.query = query.value; review.page = 0; draw(); };
+  size.onchange = () => { review.size = size.value; review.page = 0; draw(); };
+  draw();
+  return card(`검토 후보 ${candidatePages}개${groups.length ? ` · 원문 ${candidates.length}개` : ''}`,
+    h('p', { class: 'notice' }, '기업 조건의 근거와 희망 직무의 관련성을 확인한 후보입니다. 불명확한 공고는 확인 보류에서 볼 수 있습니다. 등록 전에는 선택한 공고의 상세 지원 자격과 지원 링크를 다시 확인합니다.'),
+    result.report.partial ? h('p', { class: 'small' }, '일부 사이트 결과입니다. 수집 중에도 목록을 검토할 수 있으며, 등록은 수집이 끝나거나 중지된 뒤 가능합니다.') : null,
+    ...(result.report.groupingWarnings || []).map(w => h('p', { class: 'notice bad' }, `묶지 못한 공고가 있습니다. ${w}`)),
+    h('div', { class: 'row' }, query, size),
+    h('div', { class: 'row', style: 'margin:10px 0' }, selectAll, clearSelection), table, pager,
+    h('div', { class: 'row', style: 'margin-top:12px' }, save, h('span', { class: 'muted small' }, '한 번에 최대 50개. 확인되지 않은 정보는 임의로 채우지 않습니다.')));
+}
+
+function drawCollect(box, r, options = {}) {
   const rep = r.report;
   const section = (outcome, title) => {
     const xs = rep.items.filter((i) => i.outcome === outcome);
@@ -1222,15 +1379,17 @@ function drawCollect(box, r) {
       ))))));
   };
   box.replaceChildren(...[
-    card(rep.dryRun ? '미리보기 결과' : '수집 결과',
-      h('ul', { class: 'result' }, rep.sources.map((s) => h('li', null, `${s.error ? '❌' : '✅'} ${s.label}: ${s.error || `${s.count}건`}`))),
+    card(rep.partial ? '지금까지 모은 부분 결과' : rep.phase === 'preview' ? '검토 후보 목록' : rep.dryRun ? '미리보기 결과' : '수집 결과',
+      h('ul', { class: 'result' }, rep.sources.map((s) => h('li', null, `${s.error ? '❌' : '✅'} ${s.label}${s.scope ? ` (${s.scope})` : ''}: ${s.error || `${s.count}건`}`))),
       h('div', { class: 'chips', style: 'margin-top:10px' }, Object.entries(rep.counts).map(([k, v]) => h('span', { class: 'chip', style: 'padding-right:10px' }, `${r.labels[k] || k} ${v}`))),
+      rep.createdPages !== undefined ? h('p', { class: 'small' }, `실제 생성한 Notion 페이지 ${rep.createdPages}개${rep.counts.registered ? ` · 포함된 공고 ${rep.counts.registered}개` : ''}`) : null,
       rep.ai && (rep.ai.linkSearched || rep.ai.rolesTagged || rep.ai.errors.length || rep.ai.costUsd)
         ? h('p', { class: 'small' }, `AI: 지원 페이지 ${rep.ai.linkSearched}건 중 ${rep.ai.linkFound}건 찾음 · 직무 태그 ${rep.ai.rolesTagged}건 보정${rep.ai.costUsd ? ` · $${rep.ai.costUsd.toFixed(2)}` : ''}${rep.ai.errors.length ? ` · ⚠️ ${rep.ai.errors.join(' / ')}` : ''}`)
         : null,
       h('p', { class: 'muted small' }, `리포트 파일: ${r.dir}`)),
+    rep.phase === 'preview' ? drawPreviewCandidates(r, options) : null,
     rep.searchPlan ? card(rep.searchPlan.mode === 'profile' ? '내 자료로 정한 검색 방향' : '직접 지정한 조건으로 검색',
-      h('p', { class: 'small' }, `검색어: ${rep.searchPlan.keywords.join(', ') || '사이트 직무 분류 사용'}`),
+      h('p', { class: 'small' }, `직무 탐색 참고어: ${rep.searchPlan.keywords.join(', ') || '사이트 직무 분류 사용'}. 직무 필터가 설정된 사이트는 해당 분류로 수집합니다.`),
       h('p', { class: 'muted small' }, `연결 파일 ${rep.searchPlan.filesRead}개 분석 · 직무 탐색을 위한 추론이며 지원 자격 충족 판정은 아닙니다.`),
       ...rep.searchPlan.directions.map((d) => h('div', { class: 'field' }, h('strong', null, d.role), h('div', { class: 'small' }, d.reason),
         h('div', { class: 'muted small' }, `검색어: ${d.keywords.join(', ')}`),
