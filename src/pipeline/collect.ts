@@ -71,6 +71,8 @@ export type ReportItem = {
   matchedRole?: string;
   /** 후보이지만 지원 전에 확인할 조건 (예: 석·박사 대상). 후보에서 빼지 않고 함께 보여 준다 */
   caution?: string;
+  /** 후보가 희망 방향에 얼마나 맞는지: strong = 직무명이 그 업무를 직접 가리킴, broad = 넓은 분류만 */
+  fit?: 'strong' | 'broad';
   outcome: Outcome;
   reason?: string;
   source: string;

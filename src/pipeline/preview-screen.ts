@@ -22,12 +22,13 @@ positions 는 직무별 이름과 채용 형태(career: new=신입, any=신입·
 related: positions 중 하나라도 검색 방향과 이어지는 업무다. 직무명이 "IT개발", "서버·백엔드개발", "IT Infra Management", "네트워크/서버/보안", "데이터엔지니어", "AI"처럼 넓은 기술 분류여도 related 다. 목록 단계는 놓치지 않는 것이 우선이며 등록 전에 상세 공고를 다시 확인한다.
 unrelated: positions 가 모두 검색 방향과 분명히 다른 업무일 때만 (예: 영업·마케팅·회계·생산·카지노 운영만). 기술명 단어보다 업무를 본다 (IT 운영과 물류 운영, AI 서비스 개발과 AI 라벨링, 소프트웨어 검증과 제조 품질을 구별).
 pending: 직무명만으로는 관련 업무인지 정말 알 수 없을 때만 (예: 직무명이 "기타", "일반"뿐).
+fit: related 일 때 얼마나 잘 맞는지. strong = position 이름이 검색 방향의 업무를 직접 가리킨다 (예: 서버·백엔드개발, 클라우드, DevOps, IT Infra, 네트워크/서버/보안, 데이터엔지니어). broad = "AI", "데이터", "IT", "디지털", "ICT"처럼 넓은 분류만 있거나, 관련 직무가 여러 비개발 직무 중 하나로 곁들여 있다. related 가 아니면 빈 문자열.
 caution: related 여도 지원 전에 확인할 조건이 목록에 보이면 짧게 적는다 (예: "석·박사 대상", "전문연구요원", "신입·경력 함께 모집 — 직무별 자격 확인"). 없으면 빈 문자열.
 related 는 direction 을 주어진 방향 중 정확히 하나로, quote 를 제목 또는 position 이름에 실제로 있는 연속 문자열로 쓴다. 인용을 만들어 내지 않는다.
-모든 key에 답한다. JSON만 반환한다: {"results":[{"key":"...","decision":"related|unrelated|pending","direction":"...","quote":"...","caution":"","reason":"구체적인 한국어 한 문장"}]}`;
+모든 key에 답한다. JSON만 반환한다: {"results":[{"key":"...","decision":"related|unrelated|pending","direction":"...","quote":"...","fit":"strong|broad","caution":"","reason":"구체적인 한국어 한 문장"}]}`;
 const answerSchema = z.object({
   key: z.string(), decision: z.enum(['related', 'unrelated', 'pending']),
-  direction: z.string().default(''), quote: z.string().max(300).default(''), caution: z.string().max(200).default(''), reason: z.string().min(1).max(600),
+  direction: z.string().default(''), quote: z.string().max(300).default(''), fit: z.enum(['strong', 'broad', '']).catch('').default(''), caution: z.string().max(200).default(''), reason: z.string().min(1).max(600),
 });
 type Answer = z.infer<typeof answerSchema>;
 const normalized = (s: string) => s.replace(/\s+/g, ' ').trim();
@@ -129,6 +130,8 @@ export async function screenPreviewReport(report: CollectReport, o: CollectOptio
     item.reason = answer.reason;
     // 확인할 조건은 후보에서 빼지 않고 함께 보여 준다
     item.caution = answer.decision === 'related' && answer.caution.trim() ? answer.caution.trim() : undefined;
+    // 잘 맞는 정도: 모르면 넓게 관련된 쪽으로 (잘 맞는 목록은 짧게 유지한다)
+    item.fit = answer.decision === 'related' ? (answer.fit === 'strong' ? 'strong' : 'broad') : undefined;
     if (answer.decision === 'related') item.matchedRole = `${answer.direction} — ${answer.quote}`;
   };
   const fresh: typeof queries = [];
@@ -207,6 +210,7 @@ export async function screenPreviewReport(report: CollectReport, o: CollectOptio
       twin.candidate!.roleNames = [...new Set([...twin.candidate!.roleNames, ...item.candidate!.roleNames])];
       twin.candidate!.positions = [...positionsOf(twin.candidate!), ...positionsOf(item.candidate!)].filter((p, i, all) => all.findIndex(q => q.name === p.name && q.career === p.career) === i);
       twin.caution = [...new Set([twin.caution, item.caution].filter(Boolean))].join(' / ') || undefined;
+      if (item.fit === 'strong') twin.fit = 'strong';
       item.outcome = 'merged'; item.reason = `직무 확인을 통과한 ${twin.source} 공고와 회사·마감일이 같아 합쳤습니다.`;
     } else unique.push(item);
   }

@@ -1288,11 +1288,15 @@ function drawPreviewCandidates(result, options) {
     groups.push({ outcome: 'candidate', company: group.policy.title, title: `계열사 ${members.length}개 → Notion 1페이지`,
       deadline: `${group.policy.deadline} ${group.policy.deadlineTime}`, reason: '공식 안내에서 계열사 간 동시 지원 불가 확인',
       companyTypes: [...new Set(members.flatMap(m => m.companyTypes || []))], matchedRole: [...new Set(members.map(m => m.matchedRole).filter(Boolean))].join(', '),
-      sourceUrl: group.policy.campaignUrl, policy: group.policy, members });
+      sourceUrl: group.policy.campaignUrl, policy: group.policy, members, fit: members.some(m => m.fit === 'strong') ? 'strong' : 'broad' });
   }
-  const rows = [...groups, ...original.filter(item => !groupedIds.has(item.id))];
+  const deadlineKey = item => (/^\d{4}-\d{2}-\d{2}/.test(item.deadline || '') ? item.deadline : '9999');
+  const rows = [...groups, ...original.filter(item => !groupedIds.has(item.id))].sort((a, b) => deadlineKey(a).localeCompare(deadlineKey(b)) || (a.company || '').localeCompare(b.company || ''));
+  // 잘 맞는 후보를 먼저 보여 준다. 예전 결과처럼 fit 이 없으면 잘 맞는 쪽으로 둔다
+  const isStrong = item => item.outcome === 'candidate' && item.fit !== 'broad';
+  const isBroad = item => item.outcome === 'candidate' && item.fit === 'broad';
   const rowIds = item => item.members ? item.members.map(m => m.id) : [item.id];
-  const candidatePages = rows.filter(item => item.outcome === 'candidate').length;
+  const strongCount = rows.filter(isStrong).length, broadCount = rows.filter(isBroad).length;
   let review = reviewStates.get(result.dir);
   if (!review) { review = { ids: new Set(), query: '', page: 0, size: 'all' }; reviewStates.set(result.dir, review); }
   const validIds = new Set(candidates.map(item => item.id));
@@ -1301,13 +1305,14 @@ function drawPreviewCandidates(result, options) {
   for (const group of groups) if (!rowIds(group).every(id => review.ids.has(id))) rowIds(group).forEach(id => review.ids.delete(id));
   const query = h('input', { type: 'search', placeholder: '회사명 또는 공고명으로 찾기', value: review.query });
   const size = h('select', { 'aria-label': '검토 상태' },
-    h('option', { value: 'all' }, `직무 검토 후보 ${candidatePages}개${groups.length ? ' 묶음 포함' : ''}`),
+    h('option', { value: 'all' }, `잘 맞는 후보 ${strongCount}개${groups.length ? ' (묶음 포함)' : ''}`),
+    h('option', { value: 'broad' }, `넓게 관련된 후보 ${broadCount}개 (AI·데이터 같은 넓은 분류)`),
     h('option', { value: 'pending' }, `확인 보류 ${rows.filter(item => ['company_unknown', 'review_pending'].includes(item.outcome)).length}개`),
     h('option', { value: 'excluded' }, `직무 관련 없음 ${rows.filter(item => item.outcome === 'role_mismatch').length}개`));
   size.value = review.size;
   const table = h('div', { style: 'overflow-x:auto' }), pager = h('div', { class: 'row' });
   const filteredRows = () => rows.filter(item => (item.company + ' ' + item.title + ' ' + (item.roles || []).join(' ') + ' ' + (item.members || []).map(m => `${m.company} ${m.title} ${m.matchedRole || ''}`).join(' ')).toLowerCase().includes(review.query.toLowerCase()))
-    .filter(item => review.size === 'all' ? item.outcome === 'candidate' : review.size === 'pending' ? ['company_unknown', 'review_pending'].includes(item.outcome) : item.outcome === 'role_mismatch');
+    .filter(item => review.size === 'all' ? isStrong(item) : review.size === 'broad' ? isBroad(item) : review.size === 'pending' ? ['company_unknown', 'review_pending'].includes(item.outcome) : item.outcome === 'role_mismatch');
   const selectAll = h('button', { class: 'btn', type: 'button', onclick: () => {
     const ids = filteredRows().filter(item => item.outcome === 'candidate').flatMap(rowIds);
     const selected = new Set([...review.ids, ...ids]);
@@ -1356,8 +1361,8 @@ function drawPreviewCandidates(result, options) {
   query.oninput = () => { review.query = query.value; review.page = 0; draw(); };
   size.onchange = () => { review.size = size.value; review.page = 0; draw(); };
   draw();
-  return card(`검토 후보 ${candidatePages}개${groups.length ? ` · 원문 ${candidates.length}개` : ''}`,
-    h('p', { class: 'notice' }, '기업 조건의 근거와 희망 직무의 관련성을 확인한 후보입니다. 불명확한 공고는 확인 보류에서 볼 수 있습니다. 등록 전에는 선택한 공고의 상세 지원 자격과 지원 링크를 다시 확인합니다.'),
+  return card(`잘 맞는 후보 ${strongCount}개${broadCount ? ` · 넓게 관련 ${broadCount}개` : ''}`,
+    h('p', { class: 'notice' }, '마감이 가까운 순서입니다. 직무명이 희망 업무를 직접 가리키는 공고만 먼저 보여 줍니다. AI·데이터처럼 넓은 분류만 있는 공고는 목록 선택에서 "넓게 관련된 후보"로 볼 수 있습니다. 등록 전에는 선택한 공고의 상세 지원 자격과 지원 링크를 다시 확인합니다.'),
     result.report.partial ? h('p', { class: 'small' }, '일부 사이트 결과입니다. 수집 중에도 목록을 검토할 수 있으며, 등록은 수집이 끝나거나 중지된 뒤 가능합니다.') : null,
     ...(result.report.groupingWarnings || []).map(w => h('p', { class: 'notice bad' }, `묶지 못한 공고가 있습니다. ${w}`)),
     h('div', { class: 'row' }, query, size),

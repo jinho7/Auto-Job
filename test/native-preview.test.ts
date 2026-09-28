@@ -151,3 +151,20 @@ test('구조: 직무 심사 AI 는 관련성만 판단하고, 신입 여부는 �
   assert.equal(by('degree').outcome, 'candidate'); // 조건이 있어도 숨기지 않고
   assert.equal(by('degree').caution, '석·박사 대상'); // 확인할 조건으로 붙인다
 });
+
+test('잘 맞는 정도: 직무명이 업무를 직접 가리키면 strong, 넓은 분류만 있으면 broad (모르면 broad)', async () => {
+  const s = settings(); s.collect.keywords = ['백엔드'];
+  const base = { source: 'fit', employmentTypes: ['정규직'], deadline: null, sizeHints: ['대기업'], experience: 'new' as const };
+  const rows = [
+    { ...base, sourceId: 'direct', sourceUrl: 'https://example.test/d', company: '합성직접', title: '신입 채용', roleNames: ['서버·백엔드개발'] },
+    { ...base, sourceId: 'wide', sourceUrl: 'https://example.test/w', company: '합성넓음', title: '신입 공채', roleNames: ['AI'] },
+    { ...base, sourceId: 'none', sourceUrl: 'https://example.test/n', company: '합성모름', title: '신입 공채', roleNames: ['데이터'] },
+  ];
+  const o: CollectOptions = { settings: s, http: new PoliteHttp(0), browserPage: async () => { throw new Error('사용 금지'); }, seen: new SeenStore(path.join(tempDir(), 'seen.json')), notion: null, dryRun: true, previewOnly: true, sources: ['fit'],
+    collectors: [{ id: 'fit', label: '가짜', method: 'http', status: 'ok', note: '', collect: async () => rows }],
+    runAgent: async request => ({ isError: false, text: JSON.stringify({ results: JSON.parse(request.prompt).postings.map((p: any) => ({ key: p.key, decision: 'related', direction: '백엔드', quote: p.positions[0].name,
+      ...(p.key === 'fit:direct' ? { fit: 'strong' } : p.key === 'fit:wide' ? { fit: 'broad' } : {}), reason: 'x' })) }) }) };
+  const report = await runCollect(o);
+  const fit = (id: string) => report.items.find(x => x.id === `fit:${id}`)!.fit;
+  assert.equal(fit('direct'), 'strong'); assert.equal(fit('wide'), 'broad'); assert.equal(fit('none'), 'broad');
+});
