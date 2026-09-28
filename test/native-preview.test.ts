@@ -8,6 +8,7 @@ import { catchCollector } from '../src/collectors/catch';
 import { jobkorea } from '../src/collectors/jobkorea';
 import { saramin } from '../src/collectors/saramin';
 import { mapCalendar } from '../src/collectors/jasoseol';
+import { openToNewcomers, positionsOf } from '../src/collectors/types';
 import { classifyCompany } from '../src/jobs/classify';
 import { PoliteHttp } from '../src/http';
 import { paths } from '../src/paths';
@@ -79,13 +80,74 @@ test('직무 심사는 원문 근거가 있는 관련 공고만 후보로 올리
   assert.match(report.items.find(x => x.outcome === 'candidate')!.matchedRole!, /백엔드 신입/);
 });
 
-test('직무 심사 시간 초과는 후보로 통과시키거나 다음 묶음을 반복 호출하지 않는다', async () => {
+test('직무 심사 시간 초과: 후보로 통과시키지 않고, 그 묶음만 한 번 더 한 뒤 다음 묶음은 계속 확인한다', async () => {
   const s = settings(); s.collect.keywords = ['검증용직무']; let calls = 0;
   const rows = Array.from({ length: 31 }, (_, i) => ({ source: 'timeout', sourceId: String(i), sourceUrl: `https://example.test/${i}`, company: `시간초과합성${i}`, title: '검증용직무 채용', roleNames: ['검증용직무'], experience: 'new' as const, employmentTypes: ['정규직'], deadline: null, sizeHints: ['대기업'] }));
   const o: CollectOptions = { settings: s, http: new PoliteHttp(0), browserPage: async () => { throw new Error('사용 금지'); }, seen: new SeenStore(path.join(tempDir(), 'seen.json')), notion: null, dryRun: true,
     runAgent: request => { calls++; return new Promise((_, reject) => request.signal!.addEventListener('abort', () => reject(request.signal!.reason), { once: true })); } };
   const report = await previewReport(rows, [], o, new Date().toISOString());
   await screenPreviewReport(report, { ...o, reviewTimeoutMs: 5 });
-  assert.equal(calls, 1); assert.equal(report.counts.candidate, undefined); assert.equal(report.counts.review_pending, 31);
+  // 31건 = 15·15·1 세 묶음. 묶음마다 한 번 더 해 보고(2회), 한 묶음이 실패해도 다음 묶음으로 간다
+  assert.equal(calls, 6); assert.equal(report.counts.candidate, undefined); assert.equal(report.counts.review_pending, 31);
   assert.match(report.ai.errors[0], /제한 시간/);
+});
+
+test('직무 심사 연결 문제(로그인 만료 등)는 다시 해도 같으므로 바로 멈추고 남은 공고를 보류한다', async () => {
+  const s = settings(); s.collect.keywords = ['검증용직무']; let calls = 0;
+  const rows = Array.from({ length: 31 }, (_, i) => ({ source: 'auth', sourceId: String(i), sourceUrl: `https://example.test/${i}`, company: `연결문제합성${i}`, title: '검증용직무 채용', roleNames: ['검증용직무'], experience: 'new' as const, employmentTypes: ['정규직'], deadline: null, sizeHints: ['대기업'] }));
+  const o: CollectOptions = { settings: s, http: new PoliteHttp(0), browserPage: async () => { throw new Error('사용 금지'); }, seen: new SeenStore(path.join(tempDir(), 'seen.json')), notion: null, dryRun: true,
+    runAgent: async () => { calls++; return { isError: true, text: 'Failed to authenticate: OAuth session expired' }; } };
+  const report = await previewReport(rows, [], o, new Date().toISOString());
+  await screenPreviewReport(report, o);
+  assert.equal(calls, 1); assert.equal(report.counts.candidate, undefined); assert.equal(report.counts.review_pending, 31);
+  assert.ok(report.items.some(i => /AI 연결 문제로 남은 공고/.test(i.reason ?? '')));
+});
+
+test('구조: 자소설 달력의 직무별 신입/경력을 합치지 않고 직무마다 넘긴다 (예: "IT개발 — 신입")', () => {
+  const duty = [{ id: 94, name: 'IT·인터넷', category: 'large', group_id: null }, { id: 176, name: '서버·백엔드개발', category: 'small', group_id: 94 }, { id: 91, name: '영업', category: 'small', group_id: null }];
+  // 제목은 "신입/경력"이지만, 개발 직무는 신입이고 경력 직무는 영업이다
+  const entry = { id: 7, name: '합성항공', title: '전문인력(신입/경력) 모집', end_time: '2026-10-20T00:00:00+09:00', business_size: 'big_business',
+    employments: [{ division: 1, duty_groups: [{ group_id: 176 }] }, { division: 2, duty_groups: [{ group_id: 91 }] }] };
+  const [row] = mapCalendar([entry], duty, { dutyNames: [], keywords: [], now: new Date('2026-09-01'), excludeExperienced: true });
+  assert.deepEqual(row.positions, [{ name: '서버·백엔드개발', career: 'new' }]); // 경력 전용 영업은 빠지고, 개발은 신입으로 남는다
+});
+
+test('구조: 직무별 정보가 없는 사이트는 공고 전체의 신입/경력 값으로 직무를 만든다', () => {
+  assert.deepEqual(positionsOf({ title: 'PSK 수시채용', roleNames: ['IT Infra Management', '네트워크/서버/보안'], experience: 'any' }),
+    [{ name: 'IT Infra Management', career: 'any' }, { name: '네트워크/서버/보안', career: 'any' }]);
+  assert.equal(openToNewcomers({ name: 'x', career: 'any' }), true);
+  assert.equal(openToNewcomers({ name: 'x', career: 'unknown' }), true); // 모르면 막지 않는다
+  assert.equal(openToNewcomers({ name: 'x', career: 'experienced' }), false);
+});
+
+test('구조: 직무 심사 AI 는 관련성만 판단하고, 신입 여부는 데이터로 정하며, 확인할 조건은 후보에 붙여 보여 준다', async () => {
+  const s = settings(); s.collect.keywords = ['백엔드'];
+  const base = { source: 'fake', employmentTypes: ['정규직'], deadline: null, sizeHints: ['대기업'] };
+  const rows = [
+    { ...base, sourceId: 'mixed', sourceUrl: 'https://example.test/mixed', company: '합성항공', title: '전문인력(신입/경력) 모집', roleNames: ['서버·백엔드개발'], experience: 'any' as const,
+      positions: [{ name: 'IT개발', career: 'new' as const }] },
+    { ...base, sourceId: 'career', sourceUrl: 'https://example.test/career', company: '합성경력', title: '개발자 채용', roleNames: ['백엔드'], experience: 'any' as const,
+      positions: [{ name: '백엔드', career: 'experienced' as const }] },
+    { ...base, sourceId: 'degree', sourceUrl: 'https://example.test/degree', company: '합성연구', title: '석·박사 연구장학생', roleNames: ['서버·백엔드개발'], experience: 'new' as const },
+  ];
+  const asked: any[] = [];
+  const o: CollectOptions = { settings: s, http: new PoliteHttp(0), browserPage: async () => { throw new Error('사용 금지'); }, seen: new SeenStore(path.join(tempDir(), 'seen.json')), notion: null, dryRun: true, previewOnly: true, sources: ['fake'],
+    collectors: [{ id: 'fake', label: '가짜', method: 'http', status: 'ok', note: '', collect: async () => rows }],
+    runAgent: async request => {
+      const input = JSON.parse(request.prompt);
+      asked.push(...input.postings);
+      assert.match(request.systemAppend, /신입 여부를 이유로 보류하지 않는다/);
+      return { isError: false, text: JSON.stringify({ results: input.postings.map((p: any) => p.key === 'fake:mixed'
+        ? { key: p.key, decision: 'related', direction: '백엔드', quote: 'IT개발', caution: '', reason: 'IT개발 신입 모집' }
+        : { key: p.key, decision: 'related', direction: '백엔드', quote: '서버·백엔드개발', caution: '석·박사 대상', reason: '백엔드 개발 분류' }) }) };
+    } };
+  const report = await runCollect(o);
+  const by = (id: string) => report.items.find(x => x.id === `fake:${id}`)!;
+  // AI 에는 직무별 채용 형태가 그대로 간다 (제목의 "신입/경력"에 흔들리지 않게)
+  assert.deepEqual(asked.find(p => p.key === 'fake:mixed').positions, [{ name: 'IT개발', career: 'new' }]);
+  assert.equal(by('mixed').outcome, 'candidate'); // 제목이 신입/경력이어도 IT개발이 신입이면 후보
+  assert.equal(by('career').outcome, 'experienced'); // 경력 전용 직무뿐이면 AI 에 묻지 않고 뺀다
+  assert.ok(!asked.some(p => p.key === 'fake:career'));
+  assert.equal(by('degree').outcome, 'candidate'); // 조건이 있어도 숨기지 않고
+  assert.equal(by('degree').caution, '석·박사 대상'); // 확인할 조건으로 붙인다
 });

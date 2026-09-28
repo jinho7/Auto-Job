@@ -69,6 +69,8 @@ export type ReportItem = {
   id?: string;
   candidate?: Omit<RawPosting, 'detail'>;
   matchedRole?: string;
+  /** 후보이지만 지원 전에 확인할 조건 (예: 석·박사 대상). 후보에서 빼지 않고 함께 보여 준다 */
+  caution?: string;
   outcome: Outcome;
   reason?: string;
   source: string;

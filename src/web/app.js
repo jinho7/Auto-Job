@@ -1337,6 +1337,10 @@ function drawPreviewCandidates(result, options) {
         } })),
         h('td', { class: 'small' }, item.deadline),
         h('td', null, h('strong', null, item.company), h('div', { class: 'small' }, item.title), h('div', { class: 'muted small' }, item.reason),
+          // 후보이지만 지원 전에 확인할 조건 (예: 석·박사 대상). 숨기지 않고 표시한다
+          item.caution ? h('div', { class: 'small', style: 'margin-top:4px' }, h('span', { class: 'badge warn' }, '확인'), ` ${item.caution}`) : null,
+          // 직무별 채용 형태 (사이트가 알려 준 그대로)
+          item.candidate?.positions?.length ? h('div', { class: 'muted small', style: 'margin-top:4px' }, item.candidate.positions.map(p => `${p.name} (${({ new: '신입', any: '신입·경력', experienced: '경력', unknown: '형태 미확인' })[p.career] || p.career})`).join(' · ')) : null,
           item.members ? h('details', null, h('summary', null, '계열사별 공고와 묶음 근거 보기'),
             h('p', { class: 'small' }, h('a', { href: item.policy.policyUrl, target: '_blank', rel: 'noopener' }, '공식 중복 지원 규정'), ` · 확인일 ${item.policy.checkedAt.slice(0, 10)}`),
             ...item.members.map(m => h('div', { class: 'small', style: 'margin:12px 0;white-space:normal' }, h('strong', null, m.company), h('div', null, `${m.title} · ${m.deadline}`),

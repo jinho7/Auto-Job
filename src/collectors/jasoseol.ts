@@ -43,6 +43,11 @@ export function summarizeDivisions(divs: number[]): { types: string[]; experienc
   return { types, experience };
 }
 
+/** 상세의 채용 단위: "IT개발" 같은 실제 직무명과 그 직무의 채용 형태 */
+export function detailPositions(emps: NonNullable<DetailResponse['employments']>): { name: string; career: Experience }[] {
+  return emps.filter((e) => e.field).map((e) => ({ name: e.field!, career: summarizeDivisions(e.division ?? []).experience }));
+}
+
 /** "2026-09-14T17:00:00.000+09:00" → 마감 (사이트 표기 그대로의 날짜와 시각) */
 export function deadlineFromIso(iso: string | null): RawPosting['deadline'] {
   if (!iso) return null;
@@ -81,6 +86,11 @@ export function mapCalendar(entries: CalendarEntry[], duty: DutyGroup[], opts: {
       if (!kws.some((k) => hay.includes(k))) continue;
     }
     const { types, experience } = summarizeDivisions(employments.map((x) => x.division));
+    // 달력은 직무(채용 단위)마다 신입/경력을 따로 준다. 합치지 말고 직무별로 넘긴다 ("IT개발 — 신입")
+    const positions = employments.map((x) => ({
+      name: [...new Set((x.duty_groups ?? []).map((g) => names.get(g.group_id)).filter((n): n is string => !!n))].join(', ') || e.title,
+      career: DIVISION[x.division]?.exp ?? 'unknown',
+    }));
     out.push({
       source: 'jasoseol',
       sourceId: String(e.id),
@@ -91,6 +101,7 @@ export function mapCalendar(entries: CalendarEntry[], duty: DutyGroup[], opts: {
       experience,
       employmentTypes: types,
       roleNames: groupNames,
+      positions,
       sizeHints: e.business_size && BUSINESS_SIZE[e.business_size] ? [BUSINESS_SIZE[e.business_size]] : [],
     });
   }
@@ -137,6 +148,7 @@ export const jasoseol: Collector = {
     const { types, experience } = summarizeDivisions(emps.flatMap(e => e.division ?? []));
     return { applyUrl: d.employment_page_url || undefined,
       roleNames: [...new Set([...posting.roleNames, ...emps.map(e => e.field).filter((f): f is string => !!f)])],
+      ...(emps.some(e => e.field) ? { positions: detailPositions(emps) } : {}),
       ...(types.length ? { employmentTypes: types, experience } : {}) };
   },
   id: 'jasoseol',
@@ -178,6 +190,7 @@ export const jasoseol: Collector = {
         return {
           applyUrl: d.employment_page_url || undefined,
           roleNames: [...new Set([...fields, ...groupNames, ...it.roleNames])],
+          ...(fields.length ? { positions: detailPositions(emps) } : {}),
           ...(types.length ? { employmentTypes: types, experience } : {}),
         };
       },
