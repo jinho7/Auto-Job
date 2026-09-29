@@ -36,6 +36,7 @@ export class PlaywrightMcp implements BridgeTools {
   private active: Page;
   private closed = false;
   private pages = new Set<Page>();
+  private onAdopt: (fn: (p: Page) => void) => () => void = () => () => {};
   private proxies = new Map<Page, Page>();
   private cleanup: (() => void)[] = [];
   private edits = new WeakMap<Page, Map<string, string>>();
@@ -60,6 +61,7 @@ export class PlaywrightMcp implements BridgeTools {
       const guard = await installGuard(main, settings.browser.guard, { armed: fields >= 3 });
       instance.arm = guard.arm;
       instance.pages = guard.pages;
+      instance.onAdopt = guard.onAdopt;
       const scoped = instance.scopedContext(context);
       instance.server = await createConnection({ capabilities: ['core', 'vision'], browser: {}, outputDir, saveSession: false, codegen: 'none', snapshot: { mode: 'full' }, timeouts: { action: 5000, navigation: 30000 } }, async () => scoped);
       const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -78,24 +80,24 @@ export class PlaywrightMcp implements BridgeTools {
   }
 
   private scopedContext(context: BrowserContext): BrowserContext {
-    const listeners = new Map<Function, (p: Page) => void>();
+    const stops = new Map<Function, () => void>();
     return new Proxy(context, { get: (target, key) => {
       if (key === 'pages') return () => [...this.pages].filter(p => !p.isClosed()).map(p => this.scopedPage(p));
       if (key === 'newPage') return async () => { throw new Error('지원서 탭과 그 팝업 안에서 작업하세요.'); };
       if (key === 'close') return async () => {}; // Disconnecting MCP must leave the user's form open.
       if (key === 'on' || key === 'addListener') return (event: string, listener: (p: Page) => void) => {
         if (event === 'page') {
-          const wrapped = (p: Page) => { void (async () => {
-            const opener = await p.opener();
-            if (!this.pages.has(p) && (!opener || !this.pages.has(opener))) return;
-            this.pages.add(p); listener(this.scopedPage(p));
-          })().catch(() => {}); };
-          listeners.set(listener, wrapped); target.on('page', wrapped);
-          this.cleanup.push(() => target.off('page', wrapped));
+          // 이 작업 탭 묶음에 새로 들어온 탭만 알린다 (가드가 openerId 로 판단)
+          const stop = this.onAdopt(p => listener(this.scopedPage(p)));
+          stops.set(listener, stop); this.cleanup.push(stop);
         } else target.on(event as any, listener);
         return target;
       };
-      if (key === 'off' || key === 'removeListener') return (event: string, listener: (p: Page) => void) => target.off(event as any, listeners.get(listener) ?? listener);
+      if (key === 'off' || key === 'removeListener') return (event: string, listener: (p: Page) => void) => {
+        if (event === 'page') stops.get(listener)?.();
+        else target.off(event as any, listener);
+        return target;
+      };
       const value = Reflect.get(target, key, target);
       return typeof value === 'function' ? value.bind(target) : value;
     } });

@@ -84,29 +84,52 @@ export async function markAgentAction(page: Page): Promise<void> {
   for (const f of page.frames()) await f.evaluate(MARK_AGENT_SCRIPT).catch(() => {});
 }
 
+/** CDP 가 기억하는 탭 정보. openerId 는 noopener 로 열렸거나 여는 창이 이미 닫혀도 남는다. */
+async function targetInfo(p: Page): Promise<{ targetId: string; openerId?: string } | null> {
+  const cdp = await p.context().newCDPSession(p).catch(() => null);
+  if (!cdp) return null;
+  try { return (await cdp.send('Target.getTargetInfo')).targetInfo; } catch { return null; } finally { await cdp.detach().catch(() => {}); }
+}
+
 /**
- * 가드를 이 탭과, 이 탭에서 열린 팝업에만 건다 (같은 브라우저의 다른 탭에는 영향 없음).
- * 반환값의 arm() 은 이후 "지원하기" 계열까지 막는다. owns() 는 이 탭 묶음인지 확인한다.
+ * 가드를 이 탭과, 이 탭 묶음에서 열린 탭(팝업, 새 탭)에만 건다 (같은 브라우저의 다른 탭에는 영향 없음).
+ * 묶음은 브라우저의 openerId 로 따진다. 그래서 다시 연결해도, 인증 팝업이 지원서 탭을 열고 스스로 닫아도 이어진다.
+ * 반환값의 arm() 은 이후 "지원하기" 계열까지 막는다. owns() 는 이 탭 묶음인지 확인한다. onAdopt() 는 새로 묶인 탭을 알린다.
  */
-export async function installGuard(page: Page, cfg: GuardConfig, opts: { armed?: boolean } = {}): Promise<{ arm: () => Promise<void>; owns: (p: Page | null) => boolean; pages: Set<Page> }> {
+export async function installGuard(page: Page, cfg: GuardConfig, opts: { armed?: boolean } = {}): Promise<{ arm: () => Promise<void>; owns: (p: Page | null) => boolean; pages: Set<Page>; onAdopt: (fn: (p: Page) => void) => () => void }> {
   const pages = new Set<Page>();
+  const family = new Set<string>(); // 이 묶음의 targetId (닫힌 탭 포함)
+  const adopted = new Set<(p: Page) => void>();
   let armed = !!opts.armed;
   const script = pageGuardScript(cfg);
   const apply = async (p: Page) => {
     if (pages.has(p)) return;
     pages.add(p);
+    const info = await targetInfo(p);
+    if (info) family.add(info.targetId);
     await p.addInitScript(script);
     if (armed) await p.addInitScript(ARM_SCRIPT);
     for (const f of p.frames()) await f.evaluate(`${script};${armed ? ARM_SCRIPT : ''}`).catch(() => {});
     p.on('popup', (child) => void apply(child).catch(() => {}));
-    for (const child of p.context().pages()) {
-      if (!child.isClosed() && await child.opener() === p) await apply(child);
-    }
+    for (const fn of adopted) fn(p);
   };
+  const related = async (p: Page) => {
+    if (p.isClosed() || pages.has(p)) return false;
+    const info = await targetInfo(p);
+    return !!info?.openerId && family.has(info.openerId);
+  };
+  const context = page.context();
   await apply(page);
+  // 이미 열려 있는 자식 탭 (연결 전에 열린 것 포함), 자식의 자식까지
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const p of context.pages()) if (await related(p)) { await apply(p); grew = true; }
+  }
+  context.on('page', (p) => void (async () => { if (await related(p)) await apply(p); })().catch(() => {}));
   return {
     pages,
     owns: (p) => !!p && pages.has(p),
+    onAdopt: (fn) => { adopted.add(fn); return () => adopted.delete(fn); },
     arm: async () => {
       armed = true;
       for (const p of pages) {
