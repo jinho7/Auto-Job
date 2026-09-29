@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { chromium, type Browser } from 'playwright-core';
+import { chromium, type Browser, type BrowserContext } from 'playwright-core';
 import type { CdpBrowserConfig } from '../config';
 
 async function cdpVersion(port: number): Promise<{ Browser: string } | null> {
@@ -53,8 +53,22 @@ export async function connectCdp(cfg: CdpBrowserConfig, timeoutMs = 20_000): Pro
   }
   await pending;
   await ensureWindow(cfg.cdp_port);
-  try { return await chromium.connectOverCDP(`http://127.0.0.1:${cfg.cdp_port}`, { timeout: 10_000 }); }
+  let browser: Browser;
+  try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${cfg.cdp_port}`, { timeout: 10_000 }); }
   catch { throw new Error(`자동화 브라우저 연결(${cfg.cdp_port})이 끊겼습니다. 대화에서 다시 이어가기를 요청하면 같은 프로필로 재연결합니다.`); }
+  leaveDialogsAlone(browser);
+  return browser;
+}
+
+/**
+ * 연결한 브라우저의 모든 탭에서, 이 연결이 처리하지 않는 대화상자(alert/confirm)는 그대로 둔다.
+ * Playwright 는 대화상자 리스너가 없는 탭의 대화상자를 스스로 닫는데, 그러면 사람이 보고 있던 확인창이 사라지고
+ * 사람이나 다른 연결이 먼저 닫은 경우 "No dialog is showing" 오류가 잡히지 않은 채 터져 설정 화면 서버가 꺼졌다.
+ * 빈 리스너를 달아 두면 Playwright 는 닫지 않는다. 작업 탭의 대화상자는 각 작업이 따로 처리한다.
+ */
+export function leaveDialogsAlone(browser: Browser): void {
+  const hold = (ctx: BrowserContext) => ctx.on('dialog', () => {});
+  browser.contexts().forEach(hold);
 }
 
 async function startAndWait(cfg: CdpBrowserConfig, timeoutMs: number): Promise<void> {

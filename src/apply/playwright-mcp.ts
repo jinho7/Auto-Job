@@ -4,6 +4,7 @@ import { createConnection } from '@playwright/mcp';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { chromium, type Browser, type BrowserContext, type Dialog, type Locator, type Page } from 'playwright-core';
+import { leaveDialogsAlone } from '../browser/cdp';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -48,6 +49,7 @@ export class PlaywrightMcp implements BridgeTools {
   static async connect(settings: Settings, port: number, targetId: string, filesDir: string, outputDir: string, signal?: AbortSignal): Promise<PlaywrightMcp> {
     signal?.throwIfAborted();
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    leaveDialogsAlone(browser); // 작업 탭 밖(사람의 탭)의 대화상자는 닫지 않는다
     try {
       const context = browser.contexts()[0];
       let main: Page | undefined;

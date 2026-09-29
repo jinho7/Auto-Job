@@ -149,6 +149,13 @@ program
   .action(
     run(async (opts: { port: string; open: boolean }) => {
       ensureInitialized();
+      // 설정 화면 서버는 여러 지원서 작업을 오래 들고 있다. 브라우저 연결 쪽에서 잡히지 않은 오류 하나로
+      // 서버 전체가 꺼지지 않게, 기록만 하고 계속 돈다 (이미 닫힌 대화상자·닫힌 탭 같은 것은 조용히 넘긴다)
+      process.on('unhandledRejection', (e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/No dialog is showing|Target (page, context or browser )?(has been )?closed|Browser has been closed/i.test(msg)) return;
+        console.error(`⚠️  처리하지 못한 오류 (서버는 계속 동작합니다): ${msg.split('\n')[0]}`);
+      });
       const ui = await startOrReuseUi(Number(opts.port));
       console.log(`✅ Auto-Job 설정 화면: ${ui.url}\n   ${ui.reused ? '이미 실행 중인 서버를 사용합니다. 진행 중인 작업은 그대로 유지됩니다.' : '(서버를 새로 시작할 때 주소가 바뀝니다. 끄려면 Ctrl+C)'}`);
       if (opts.open) openUrl(ui.url);
