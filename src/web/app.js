@@ -1020,7 +1020,18 @@ function appliesPage() {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
-  const foot = h('div', { class: 'chat-foot' }, input, h('div', { class: 'row', style: 'margin-top:6px;justify-content:flex-end' }, sendBtn));
+  // 사람이 작업을 끝냈다고 표시: Notion 제출 상태를 바꾸고 대화방을 완료로
+  const mark = async (status) => {
+    const id = applyState.active;
+    const job = applyState.jobs.find((j) => j.id === id);
+    if (!job || !confirm(`${job.title}: Notion 제출 상태를 "${status}"(으)로 바꾸고 작업을 완료로 표시할까요?`)) return;
+    const r = await api('POST', '/api/apply/mark', { id, status }).catch((e) => toast(e.message, true));
+    if (r) toast(r.notion);
+    pollApplies();
+  };
+  const submittedBtn = h('button', { class: 'btn', type: 'button', onclick: () => mark('제출완료') }, '제출완료로 변경');
+  const notSubmittedBtn = h('button', { class: 'btn', type: 'button', onclick: () => mark('미제출') }, '미제출로 변경');
+  const foot = h('div', { class: 'chat-foot' }, input, h('div', { class: 'row', style: 'margin-top:6px;justify-content:flex-end;gap:6px' }, submittedBtn, notSubmittedBtn, sendBtn));
   const chat = h('div', { class: 'chat' }, head, body, foot);
   let shownCount = -1;
   let shownJob = null;
@@ -1028,15 +1039,37 @@ function appliesPage() {
   drawApplies = () => {
     const jobs = [...applyState.jobs].reverse();
     if (!applyState.active && jobs.length) applyState.active = (jobs.find((j) => j.status === 'waiting') || jobs[0]).id;
-    list.replaceChildren(...(jobs.length ? jobs.map((j) => h('button', { class: `room${j.id === applyState.active ? ' active' : ''}`, type: 'button', onclick: () => { applyState.active = j.id; drawApplies(); } },
-      j.status === 'waiting' ? h('span', { class: 'dot', title: '확인이 필요합니다' }) : null,
-      h('div', { class: 't' }, h('span', { style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, j.title), h('span', { class: `badge ${STATUS_TEXT[j.status][0]}` }, STATUS_TEXT[j.status][1])),
-      h('div', { class: 'a' }, j.status === 'waiting' ? `🙋 ${j.waiting || '확인이 필요합니다'}` : j.activity))) : [h('p', { class: 'muted small' }, '아직 맡긴 지원서가 없습니다. "+ 새 지원서"를 눌러 Notion 공고를 고르세요.')]));
+    // 여러 대화방 골라 삭제하기 (진행 중인 방은 서버가 거절하고 그대로 둔다)
+    const picked = applyState.picked ??= new Set();
+    for (const id of [...picked]) if (!jobs.some((j) => j.id === id)) picked.delete(id);
+    const removePicked = async () => {
+      const ids = [...picked];
+      if (!ids.length || !confirm(`고른 대화방 ${ids.length}개를 삭제할까요? (브라우저 창과 Notion 페이지는 그대로 둡니다. 진행 중인 방은 건너뜁니다)`)) return;
+      const failed = [];
+      for (const id of ids) {
+        await api('POST', '/api/apply/remove', { id }).then(() => { picked.delete(id); delete applyState.msgs[id]; if (applyState.active === id) applyState.active = null; })
+          .catch(() => failed.push(jobs.find((j) => j.id === id)?.title || id));
+      }
+      toast(failed.length ? `${ids.length - failed.length}개 삭제 · 진행 중이라 남긴 방: ${failed.join(', ')}` : `${ids.length}개 삭제했습니다`, !!failed.length);
+      pollApplies();
+    };
+    const tools = jobs.length ? h('div', { class: 'row', style: 'gap:4px;flex-wrap:wrap;align-items:center;margin-bottom:2px' },
+      h('button', { class: 'btn', type: 'button', onclick: () => { jobs.forEach((j) => picked.add(j.id)); drawApplies(); } }, '전체 선택'),
+      h('button', { class: 'btn', type: 'button', disabled: !picked.size, onclick: () => { picked.clear(); drawApplies(); } }, '전체 선택 해제'),
+      h('button', { class: 'btn danger', type: 'button', disabled: !picked.size, onclick: removePicked }, `선택 삭제${picked.size ? ` (${picked.size})` : ''}`)) : null;
+    list.replaceChildren(...(jobs.length ? [tools, ...jobs.map((j) => h('div', { class: 'room-row' },
+      h('input', { type: 'checkbox', 'aria-label': `${j.title} 선택`, checked: picked.has(j.id), onchange: (e) => { e.target.checked ? picked.add(j.id) : picked.delete(j.id); drawApplies(); } }),
+      h('button', { class: `room${j.id === applyState.active ? ' active' : ''}`, type: 'button', onclick: () => { applyState.active = j.id; drawApplies(); } },
+        j.status === 'waiting' ? h('span', { class: 'dot', title: '확인이 필요합니다' }) : null,
+        h('div', { class: 't' }, h('span', { style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, j.title), h('span', { class: `badge ${STATUS_TEXT[j.status][0]}` }, STATUS_TEXT[j.status][1])),
+        h('div', { class: 'a' }, j.status === 'waiting' ? `🙋 ${j.waiting || '확인이 필요합니다'}` : j.activity))))] : [h('p', { class: 'muted small' }, '아직 맡긴 지원서가 없습니다. "+ 새 지원서"를 눌러 Notion 공고를 고르세요.')]));
     const job = applyState.jobs.find((j) => j.id === applyState.active);
     chat.style.display = job ? '' : 'none';
     if (!job) return;
     const inAside = job.executionMode === 'aside';
     foot.style.display = inAside ? 'none' : '';
+    const busy = ['queued', 'running'].includes(job.status);
+    for (const b of [submittedBtn, notSubmittedBtn]) { b.disabled = busy; b.title = busy ? '진행 중인 작업은 먼저 중지해 주세요' : 'Notion 제출 상태를 바꾸고 작업을 완료로 표시합니다'; }
     if (shownJob !== job.id) input.value = sessionStorage.getItem(draftKey(job.id)) || '';
     head.replaceChildren(
       h('div', null, h('strong', null, job.title), ' ', h('span', { class: `badge ${STATUS_TEXT[job.status][0]}` }, inAside ? 'Aside 패널' : STATUS_TEXT[job.status][1])),
@@ -1045,7 +1078,11 @@ function appliesPage() {
         inAside ? h('button', { class: 'btn', type: 'button', title: 'Aside 작업을 먼저 마친 후 전환하세요', onclick: () => api('POST', '/api/apply/autojob', { id: job.id }).then(pollApplies).catch(e => toast(e.message, true)) }, 'Auto-Job으로 전환') : null,
         !inAside && ['running', 'waiting', 'done', 'error', 'stopped', 'idle'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: async () => { const r = await api('POST', '/api/apply/focus', { id: job.id }).catch((e) => toast(e.message, true)); if (r && !r.focused) toast('이 지원서의 창은 이미 끝나 연결이 없습니다. 브라우저에서 직접 확인해 주세요.'); } }, '창 보기') : null,
         !inAside && ['queued', 'running', 'waiting'].includes(job.status) ? h('button', { class: 'btn danger', type: 'button', onclick: () => confirm(`${job.title} 지원서를 중지할까요? (입력한 칸과 창은 그대로 둡니다)`) && api('POST', '/api/apply/stop', { id: job.id }).then(pollApplies).catch((e) => toast(e.message, true)) }, '중지') : null,
-        ['done', 'error', 'stopped', 'idle'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: () => api('POST', '/api/apply/remove', { id: job.id }).then(() => { delete applyState.msgs[job.id]; applyState.active = null; pollApplies(); }).catch((e) => toast(e.message, true)) }, '방 지우기') : null),
+        ['done', 'error', 'stopped', 'idle'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: () => confirm(`${job.title} 대화방을 삭제할까요? (브라우저 창과 Notion 페이지는 그대로 둡니다)`) && api('POST', '/api/apply/remove', { id: job.id }).then(() => { delete applyState.msgs[job.id]; applyState.active = null; pollApplies(); }).catch((e) => toast(e.message, true)) }, '삭제') : null,
+        job.notionUrl ? h('button', { class: 'btn', type: 'button', onclick: async () => {
+          const r = await api('POST', '/api/apply/notion-open', { id: job.id }).catch((e) => toast(e.message, true));
+          if (r && !r.opened) window.open(r.url, '_blank', 'noopener'); // Notion 앱이 없으면 브라우저로
+        } }, 'Notion 페이지로 이동') : null),
     );
     const msgs = applyState.msgs[job.id] || [];
     if (shownJob !== job.id || shownCount !== msgs.length) {

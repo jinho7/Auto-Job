@@ -312,10 +312,31 @@ export class ApplyJobManager {
     this.sessions.clear();
   }
 
+  /** 이 작업의 Notion 공고 페이지 (공고를 Notion 에서 골랐거나, 작업 중 연결된 페이지) */
+  notionUrl(id: string): string | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    if (/notion\.(so|site|com)/.test(job.target)) return job.target;
+    const url = (job.reportContext?.notion as { pageUrl?: string } | undefined)?.pageUrl;
+    return url || undefined;
+  }
+
+  /** 사람이 작업을 끝냈다고 표시한다 (제출완료 / 미제출). 진행 중이면 먼저 중지해야 한다 */
+  markFinished(id: string, label: string): void {
+    const job = this.jobs.get(id);
+    if (!job) throw new Error('없는 대화방입니다');
+    if (this.executions.has(id) || ['queued', 'running'].includes(job.status)) throw new Error('진행 중인 작업은 먼저 중지해 주세요');
+    this.pending.delete(id);
+    job.status = 'done'; job.waiting = null; job.finishedAt = new Date().toISOString();
+    job.activity = `${label} · 작업 완료`;
+    this.push(job, 'system', `${label}(으)로 바꾸고 작업을 완료로 표시했습니다.`);
+    this.persist();
+  }
+
   snapshot(since = 0) {
     const jobs = [...this.jobs.values()];
     return { seq: this.seq,
-      jobs: jobs.map(({ messages, sessionRef, reportContext, ...j }) => ({ ...j, lastSeq: messages.at(-1)?.seq ?? 0 })),
+      jobs: jobs.map(({ messages, sessionRef, reportContext, ...j }) => ({ ...j, notionUrl: this.notionUrl(j.id), lastSeq: messages.at(-1)?.seq ?? 0 })),
       messages: jobs.flatMap(j => j.messages.filter(m => m.seq > since)).sort((a, b) => a.seq - b.seq),
     };
   }

@@ -60,6 +60,7 @@ import { hasSearchProfile } from '../profile/search-sources';
 import { connectionKeyName, SECRET_KEYS, secretStatus, setSecret, type SecretKey } from '../secrets';
 import { SOURCE_LABELS, STANDARD_EMPLOYMENT } from '../settings/editor';
 import { parseNotionId, SettingsStore } from '../settings/store';
+import { setSubmitStatus } from '../notion/page-fill';
 
 export const collectTask = new CollectTask(undefined, undefined, path.join(paths.data, 'collection-task.json'));
 export async function closeCollectTask(): Promise<void> { await collectTask.close(); }
@@ -168,6 +169,31 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
   'POST /api/apply/stop': (b) => (applyJobs().stop(str(b, 'id')), {}),
   'POST /api/apply/focus': async (b) => ({ focused: await applyJobs().focus(str(b, 'id')) }),
   'POST /api/apply/remove': (b) => (applyJobs().remove(str(b, 'id')), {}),
+  // Notion 공고 페이지를 Notion 앱으로 연다 (앱이 없으면 브라우저 주소를 돌려준다)
+  'POST /api/apply/notion-open': async (b) => {
+    const url = applyJobs().notionUrl(str(b, 'id'));
+    const id = url ? parseNotionId(url) : null;
+    if (!url || !id) throw new Error('이 작업에 연결된 Notion 공고 페이지가 없습니다');
+    const web = `https://www.notion.so/${id.replace(/-/g, '')}`;
+    if (process.platform !== 'darwin') return { opened: false, url: web };
+    const opened = await new Promise<boolean>((resolve) => execFile('open', [`notion://www.notion.so/${id.replace(/-/g, '')}`], (err) => resolve(!err)));
+    return { opened, url: web };
+  },
+  // 사람이 작업을 끝냈다고 표시: Notion 제출 상태를 바꾸고 대화방을 완료로
+  'POST /api/apply/mark': async (b) => {
+    const id = str(b, 'id');
+    const want = str(b, 'status');
+    const settings = loadSettings();
+    const allowed = ['제출완료', '미제출'];
+    if (!allowed.includes(want)) throw new Error('제출완료 또는 미제출만 고를 수 있습니다');
+    const url = applyJobs().notionUrl(id);
+    const pageId = url ? parseNotionId(url) : null;
+    let notion = 'Notion 공고 페이지가 연결되지 않아 대화방만 완료로 바꿨습니다';
+    if (pageId) notion = await setSubmitStatus(notionClient(), pageId, settings, want);
+    if (pageId && !notion.startsWith('제출 상태 →')) throw new Error(notion); // 옵션이 없거나 속성이 없으면 대화방도 그대로 둔다
+    applyJobs().markFinished(id, want);
+    return { notion };
+  },
   'POST /api/apply/aside': (b) => applyJobs().handoff(str(b, 'id'), prepareAsideHandoff),
   'POST /api/apply/aside/open': async (b) => {
     const job = applyJobs().jobs.get(str(b, 'id'));

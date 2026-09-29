@@ -178,6 +178,9 @@ pre.code { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--
 .rooms { display: grid; grid-template-columns: 280px 1fr; gap: 12px; min-height: 60vh; }
 @media (max-width: 760px) { .rooms { grid-template-columns: 1fr; } }
 .room-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.room-row { display: flex; gap: 6px; align-items: stretch; min-width: 0; }
+.room-row > input[type=checkbox] { flex: none; align-self: center; }
+.room-row > .room { flex: 1; min-width: 0; }
 .room { position: relative; text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; }
 .room.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .room .t { font-weight: 600; display: flex; gap: 6px; align-items: center; padding-right: 14px; }

@@ -190,3 +190,22 @@ test('이어서 해도 같은 일이 남으면 그만두고 사용자에게 알�
   assert.match(String(j.waiting), /임시저장 성공을 확인하지 못했습니다/);
   await m.close();
 });
+
+test('작업 완료로 표시: Notion 공고 주소를 알려 주고, 진행 중이면 막고, 끝난 방은 완료로 바꾼다', async () => {
+  let release!: () => void;
+  const m = new ApplyJobManager({ maxParallel: () => 1, run: async o => { await new Promise<void>(r => (release = r)); return report(o); } });
+  const [j] = m.start([{ target: 'https://www.notion.so/Page-0123abcd4567ef890123abcd4567ef89', title: '합성회사' }]);
+  await until(() => j.status === 'running');
+  assert.equal(m.notionUrl(j.id), 'https://www.notion.so/Page-0123abcd4567ef890123abcd4567ef89');
+  assert.equal(m.snapshot(0).jobs[0].notionUrl, 'https://www.notion.so/Page-0123abcd4567ef890123abcd4567ef89');
+  assert.throws(() => m.markFinished(j.id, '제출완료'), /먼저 중지/);
+  release(); await until(() => j.status === 'done');
+  m.markFinished(j.id, '미제출');
+  assert.equal(j.status, 'done'); assert.equal(j.waiting, null);
+  assert.match(j.activity, /미제출 · 작업 완료/);
+  assert.ok(j.messages.some(x => x.kind === 'system' && /미제출\(으\)로 바꾸고 작업을 완료로/.test(x.text)));
+  // Notion 에서 고르지 않은 작업은 주소가 없다
+  const [k] = m.start([{ target: 'https://careers.example.test/1', title: '직접 입력' }]);
+  assert.equal(m.notionUrl(k.id), undefined);
+  await m.close();
+});

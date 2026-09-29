@@ -122,9 +122,8 @@ export async function fillPageSections(client: NotionClient, pageId: string, con
 }
 
 /** 제출 상태를 바꾼다. DB 에 그 옵션이 없으면 바꾸지 않고 알려준다 (새 옵션을 만들지 않음). */
-export async function setSubmitStatus(client: NotionClient, pageId: string, settings: Settings): Promise<string> {
+export async function setSubmitStatus(client: NotionClient, pageId: string, settings: Settings, want = settings.notion.status_options.after_apply): Promise<string> {
   const n = settings.notion;
-  const want = n.status_options.after_apply;
   const page = await client.getPage(pageId);
   const cur = page.properties[n.fields.status];
   if (!cur) return `"${n.fields.status}" 속성이 없어 제출 상태를 바꾸지 않았습니다`;
