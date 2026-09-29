@@ -5,7 +5,6 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { pickMainPid } from '../src/browser/activate';
 import { importPasswords, lastImport, listProfiles } from '../src/browser/default-profile';
-import { loginHelp } from '../src/apply/run';
 import { parseSettings, type Settings } from '../src/config';
 import { agentFor, modelForConnection } from '../src/llm';
 import type { AgentRun } from '../src/llm/claude-cli';
@@ -149,9 +148,3 @@ test('브라우저 본체 프로세스 고르기: 도우미(Helper)와 번호가
   assert.equal(pickMainPid('', []), null);
 });
 
-test('로그인 대기 안내: 아직 안 가져왔으면 가져오라고 알려 준다', () => {
-  const settings: Settings = { ...base, browser: { ...base.browser, aside: { ...base.browser.aside, profile_dir: tempDir() } } };
-  assert.match(loginHelp(settings), /비밀번호 가져오기/);
-  assert.match(loginHelp(settings, () => ({ at: '', profile: 'Default', files: ['Login Data'], cookies: false })), /자동 완성/);
-  assert.match(loginHelp(settings, () => ({ at: '', profile: 'Default', files: ['Login Data'], cookies: true })), /로그인 상태까지/);
-});

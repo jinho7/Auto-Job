@@ -65,13 +65,30 @@ let view = (() => {
   try { return JSON.parse(localStorage.getItem('autojob-view')) || { type: 'settings', id: 'start' }; } catch { return { type: 'settings', id: 'start' }; }
 })();
 
+// 좌측 메뉴: 자주 쓰는 3개 + 내 정보 + 설정. 내 정보와 설정은 고른 때만 하위 메뉴를 펼친다.
+const MAIN_PAGES = [['start', '시작하기', 'home'], ['collect', '공고 수집', 'search'], ['applies', '지원서 작성', 'edit']];
 const SETTINGS_PAGES = [
-  ['실행', [['start', '시작하기'], ['collect', '공고 수집'], ['applies', '지원서 작성']]],
-  ['검색 조건', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태'], ['roles', '직무 태그 규칙'], ['ai', 'AI 보강']]],
+  ['검색', [['keywords', '검색 키워드'], ['sources', '수집 사이트'], ['employment', '고용형태'], ['roles', '직무 태그 규칙'], ['ai', 'AI 보강']]],
   ['기업 필터', [['companies', '기업 구분'], ['overrides', '회사 직접 지정']]],
-  ['작성', [['apply', '지원서 입력 규칙'], ['essay', '자기소개서 문체']]],
+  ['지원서', [['apply', '지원서 입력 규칙'], ['essay', '자기소개서 문체']]],
   ['연결', [['notion', 'Notion'], ['browser', '브라우저'], ['llm', 'AI 연결'], ['guard', '제출 차단 문구']]],
 ];
+const ICONS = {
+  home: 'M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z',
+  search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm9 16-4-4',
+  edit: 'M4 20h4L19 9l-4-4L4 16zm9-13 4 4',
+  user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-8 9a8 8 0 0 1 16 0',
+  gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14.5 3h-5l-.4 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2l.4 2.6h5l.4-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z',
+};
+const icon = (name) => {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', ICONS[name]); svg.append(path);
+  return svg;
+};
+const isMain = (id) => MAIN_PAGES.some(([m]) => m === id);
 
 function go(type, id) {
   view = { type, id };
@@ -87,27 +104,39 @@ const sectionIssues = (name) => ({
 function renderChrome() {
   if (!state) return;
   const nav = document.getElementById('nav');
-  nav.replaceChildren(
-    h('h3', null, '내 정보'),
-    h('button', { class: view.type === 'profile' && view.id === '__import' ? 'active' : '', onclick: () => go('profile', '__import') }, h('span', null, '📋 붙여넣어 채우기')),
-    ...Object.entries(state.schema.sections).map(([name, sec]) => {
-      const { missing, errors } = sectionIssues(name);
-      const badge = errors ? h('span', { class: 'badge bad' }, `오류 ${errors}`) : missing ? h('span', { class: 'badge warn' }, `필수 ${missing}`) : null;
-      return h('button', { class: view.type === 'profile' && view.id === name ? 'active' : '', onclick: () => go('profile', name) }, h('span', null, sec.label), badge);
-    }),
-    ...SETTINGS_PAGES.flatMap(([group, pages]) => [
-      h('h3', null, group),
-      ...pages.map(([id, label]) => h('button', { class: view.type === 'settings' && view.id === id ? 'active' : '', onclick: () => go('settings', id) }, h('span', null, label), settingsBadge(id))),
-    ]),
-  );
-
-  const s = state.settings;
+  const top = (label, iconName, active, onclick, badge) =>
+    h('button', { class: `nav-top${active ? ' active' : ''}`, type: 'button', onclick, 'aria-current': active ? 'page' : null }, icon(iconName), h('span', { class: 'label' }, label), badge);
+  const sub = (label, active, onclick, badge) => h('button', { class: active ? 'active' : '', type: 'button', onclick, 'aria-current': active ? 'page' : null }, h('span', { class: 'label' }, label), badge);
+  const inProfile = view.type === 'profile';
+  const inSettings = view.type === 'settings' && !isMain(view.id);
   const c = state.check;
+  const profileTodo = c.missing.length + c.errors.length;
+  const settingsTodo = SETTINGS_PAGES.some(([, pages]) => pages.some(([id]) => settingsBadge(id)?.classList.contains('warn')));
+  const firstSection = Object.keys(state.schema.sections)[0];
+  nav.replaceChildren(...[
+    ...MAIN_PAGES.map(([id, label, ic]) => top(label, ic, view.type === 'settings' && view.id === id, () => go('settings', id), settingsBadge(id))),
+    top('내 정보', 'user', inProfile, () => !inProfile && go('profile', firstSection), profileTodo ? h('span', { class: 'badge warn' }, `${profileTodo}`) : null),
+    inProfile ? h('div', { class: 'nav-sub' },
+      sub('붙여넣어 채우기', view.id === '__import', () => go('profile', '__import')),
+      ...Object.entries(state.schema.sections).map(([name, sec]) => {
+        const { missing, errors } = sectionIssues(name);
+        const badge = errors ? h('span', { class: 'badge bad' }, `오류 ${errors}`) : missing ? h('span', { class: 'badge warn' }, `필수 ${missing}`) : null;
+        return sub(sec.label, view.id === name, () => go('profile', name), badge);
+      })) : null,
+    top('설정', 'gear', inSettings, () => !inSettings && go('settings', SETTINGS_PAGES[0][1][0][0]), settingsTodo ? h('span', { class: 'badge warn' }, '!') : null),
+    inSettings ? h('div', { class: 'nav-sub' },
+      ...SETTINGS_PAGES.flatMap(([group, pages]) => [
+        h('h3', null, group),
+        ...pages.map(([id, label]) => sub(label, view.id === id, () => go('settings', id), settingsBadge(id))),
+      ])) : null,
+  ].filter(Boolean));
+
+  // 상단에는 손봐야 할 것만 보여 준다
+  const s = state.settings;
+  const notionReady = state.secrets.NOTION_TOKEN.set && s.notion.data_source_id;
   document.getElementById('summary').replaceChildren(
-    h('span', { class: `badge ${c.missing.length || c.errors.length ? 'warn' : 'ok'}` }, `내 정보 ${c.filled}/${c.total}`),
-    h('span', { class: `badge ${state.searchProfileReady ? 'ok' : ''}` }, state.searchProfileReady ? '내 자료 기반 검색' : `추가 검색어 ${s.collect.keywords.length}개 (선택)`),
-    h('span', { class: `badge ${state.secrets.NOTION_TOKEN.set && s.notion.data_source_id ? 'ok' : 'warn'}` }, state.secrets.NOTION_TOKEN.set ? (s.notion.data_source_id ? 'Notion 연결됨' : 'Notion DB 미선택') : 'Notion 미연결'),
-    h('span', { class: 'badge ok' }, `브라우저 ${s.browser.driver}`),
+    profileTodo ? h('button', { class: 'badge warn', type: 'button', onclick: () => go('settings', 'start') }, `내 정보 ${c.filled}/${c.total}`) : null,
+    notionReady ? null : h('button', { class: 'badge warn', type: 'button', onclick: () => go('settings', 'notion') }, state.secrets.NOTION_TOKEN.set ? 'Notion DB 미선택' : 'Notion 미연결'),
   );
 }
 
@@ -127,6 +156,7 @@ function settingsBadge(id) {
 function render() {
   renderChrome();
   const main = document.getElementById('main');
+  main.className = view.type === 'settings' && ['applies', 'collect'].includes(view.id) ? 'wide' : '';
   main.replaceChildren(...(view.type === 'profile' ? profilePage(view.id) : settingsPage(view.id)).filter(Boolean));
   main.scrollTop = 0;
 }
@@ -423,7 +453,7 @@ function drawImport(box, pv) {
         ))))),
     )),
     rulePicks.length ? card('지원서 입력 규칙에 추가',
-      h('p', { class: 'muted small', style: 'margin-top:0' }, '글에서 찾은 입력 지시 중 기본 규칙에 없는 것입니다. 작성 → 지원서 입력 규칙에 들어갑니다.'),
+      h('p', { class: 'muted small', style: 'margin-top:0' }, '글에서 찾은 입력 지시 중 기본 규칙에 없는 것입니다. 설정 → 지원서 입력 규칙에 들어갑니다.'),
       ...rulePicks.map(([r, cb]) => h('label', { style: 'display:flex;gap:8px;margin:4px 0' }, cb, r))) : null,
     pv.unknown.length ? h('div', { class: 'notice' }, `항목에 없어 뺀 것: ${pv.unknown.join(', ')}`) : null,
     h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: apply }, '적용하기'), h('button', { class: 'btn', type: 'button', onclick: () => { importPreview = null; box.replaceChildren(); } }, '취소')),
@@ -630,7 +660,7 @@ function settingsPage(id) {
           toggle('임시저장 버튼 누르기 (최종 제출은 절대 누르지 않음)', 'apply.save_draft'),
           h('p', { class: 'muted small' }, 'AI가 화면에서 임시저장 버튼을 찾아 누르고 저장 결과를 확인합니다.'),
           toggle('Notion 공고 페이지 본문 채우고 제출 상태 바꾸기', 'apply.update_notion'),
-          h('p', { class: 'muted small' }, '본문 제목과 바꿀 상태는 연결 → Notion 에서 정합니다. 기존 내용을 읽고 변경된 답변·작성 상태를 갱신한 뒤 다시 확인합니다.')),
+          h('p', { class: 'muted small' }, '본문 제목과 바꿀 상태는 설정 → Notion 에서 정합니다. 기존 내용을 읽고 변경된 답변·작성 상태를 갱신한 뒤 다시 확인합니다.')),
         card('AI 모델 · 동시 진행',
           modelEffortRow('모델 · 추론 성능', 'apply.model', 'apply.effort', '비우면 AI 연결의 기본. 대화·화면 조작·자소서까지 같은 모델이 수행합니다.'),
           textSetting('동시에 진행할 지원서 수', 'apply.max_parallel', { type: 'number', hint: '설정 화면에서 여러 개를 맡길 때 한꺼번에 진행할 개수 (1~8). 나머지는 차례를 기다립니다. 많을수록 AI 사용량이 빨리 닳습니다.' })),
@@ -823,7 +853,7 @@ function rolesPage() {
       }) : [h('p', { class: 'muted' }, 'DB에 직무 태그가 없습니다.')]));
     }).catch((e) => box.replaceChildren(h('div', { class: 'notice bad' }, e.message)));
   } else {
-    box.replaceChildren(h('div', { class: 'notice' }, '먼저 Notion 을 연결하고 DB를 골라 주세요 (연결 → Notion).'));
+    box.replaceChildren(h('div', { class: 'notice' }, '먼저 Notion 을 연결하고 DB를 골라 주세요 (설정 → Notion).'));
   }
   return page('직무 태그 규칙', '공고 제목과 사이트의 직무명에 이 단어가 있으면 Notion 직무 태그를 답니다. 단어를 적지 않은 태그는 태그 이름의 단어로 판단합니다. 새 태그는 만들지 않습니다.',
     card(null, box));
@@ -957,6 +987,7 @@ async function pollApplies() {
 }
 
 let drawApplies = null;
+let closeMoreMenu = null;
 async function showAsideHandoff(id) {
   const back = h('div', { class: 'modal-back' });
   const box = h('div', { class: 'modal' }, h('p', null, '이 작업을 정리하고 Aside용 자료를 준비하고 있습니다…'));
@@ -997,11 +1028,13 @@ function appliesPage() {
   const list = h('div', { class: 'room-list' });
   const head = h('div', { class: 'chat-head' });
   const body = h('div', { class: 'chat-body' });
-  const input = h('textarea', { placeholder: '여기에 답을 적으세요 (Enter 보내기, Shift+Enter 줄바꿈). 비밀번호는 적지 말고 브라우저 창에 직접 입력하세요.' });
-  const sendBtn = h('button', { class: 'btn primary', type: 'button' }, '보내기');
+  const input = h('textarea', { rows: 2, 'aria-label': '메시지' });
+  const sendBtn = h('button', { class: 'btn primary sm', type: 'button' }, '보내기');
   let sending = false;
+  let menuOpen = false;
   const draftKey = id => `autojob-chat-draft:${id}`;
-  input.addEventListener('input', () => { if (applyState.active) sessionStorage.setItem(draftKey(applyState.active), input.value); });
+  const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 200)}px`; };
+  input.addEventListener('input', () => { grow(); if (applyState.active) sessionStorage.setItem(draftKey(applyState.active), input.value); });
   const send = async () => {
     const id = applyState.active;
     if (!id || !input.value.trim() || sending) return;
@@ -1010,7 +1043,7 @@ function appliesPage() {
     try {
       await api('POST', '/api/apply/answer', { id, text });
       if (sessionStorage.getItem(draftKey(id)) === text) sessionStorage.removeItem(draftKey(id));
-      if (applyState.active === id && input.value === text) input.value = '';
+      if (applyState.active === id && input.value === text) { input.value = ''; grow(); }
     } catch (e) {
       toast(e.message, true);
     } finally { sending = false; sendBtn.disabled = false; }
@@ -1029,19 +1062,38 @@ function appliesPage() {
     if (r) toast(r.notion);
     pollApplies();
   };
-  const submittedBtn = h('button', { class: 'btn', type: 'button', onclick: () => mark('제출완료') }, '제출완료로 변경');
-  const notSubmittedBtn = h('button', { class: 'btn', type: 'button', onclick: () => mark('미제출') }, '미제출로 변경');
-  const foot = h('div', { class: 'chat-foot' }, input, h('div', { class: 'row', style: 'margin-top:6px;justify-content:flex-end;gap:6px' }, submittedBtn, notSubmittedBtn, sendBtn));
+  const submittedBtn = h('button', { class: 'btn sm', type: 'button', onclick: () => mark('제출완료') }, '제출완료로 변경');
+  const notSubmittedBtn = h('button', { class: 'btn sm', type: 'button', onclick: () => mark('미제출') }, '미제출로 변경');
+  const foot = h('div', { class: 'chat-foot' }, h('div', { class: 'composer' }, input, h('div', { class: 'bar' }, submittedBtn, notSubmittedBtn, h('span', { class: 'spacer' }), sendBtn)));
   const chat = h('div', { class: 'chat' }, head, body, foot);
   let shownCount = -1;
   let shownJob = null;
 
+  const removeOne = (job) => confirm(`${job.title} 대화방을 삭제할까요? (브라우저 창과 Notion 페이지는 그대로 둡니다)`)
+    && api('POST', '/api/apply/remove', { id: job.id }).then(() => { delete applyState.msgs[job.id]; applyState.active = null; pollApplies(); }).catch((e) => toast(e.message, true));
+  const openNotion = async (job) => {
+    const r = await api('POST', '/api/apply/notion-open', { id: job.id }).catch((e) => toast(e.message, true));
+    if (r && !r.opened) window.open(r.url, '_blank', 'noopener'); // Notion 앱이 없으면 브라우저로
+  };
+  const focusWindow = async (job) => {
+    const r = await api('POST', '/api/apply/focus', { id: job.id }).catch((e) => toast(e.message, true));
+    if (r && !r.focused) toast('이 지원서의 창은 이미 끝나 연결이 없습니다. 브라우저에서 직접 확인해 주세요.');
+  };
+  const stopJob = (job) => confirm(`${job.title} 지원서를 중지할까요? (입력한 칸과 창은 그대로 둡니다)`)
+    && api('POST', '/api/apply/stop', { id: job.id }).then(pollApplies).catch((e) => toast(e.message, true));
+  // 더 보기 메뉴는 바깥을 누르면 닫는다 (화면을 다시 열 때마다 이전 처리기는 뗀다)
+  document.removeEventListener('click', closeMoreMenu);
+  closeMoreMenu = (e) => { if (menuOpen && !e.target.closest?.('.more')) { menuOpen = false; drawApplies(); } };
+  document.addEventListener('click', closeMoreMenu);
+  const pick = (fn) => (e) => { menuOpen = false; e.target.closest('details').open = false; fn(); };
+
   drawApplies = () => {
     const jobs = [...applyState.jobs].reverse();
     if (!applyState.active && jobs.length) applyState.active = (jobs.find((j) => j.status === 'waiting') || jobs[0]).id;
-    // 여러 대화방 골라 삭제하기 (진행 중인 방은 서버가 거절하고 그대로 둔다)
+    // 편집: 여러 대화방 골라 삭제하기 (진행 중인 방은 서버가 거절하고 그대로 둔다)
     const picked = applyState.picked ??= new Set();
     for (const id of [...picked]) if (!jobs.some((j) => j.id === id)) picked.delete(id);
+    const editing = applyState.editing && jobs.length > 0;
     const removePicked = async () => {
       const ids = [...picked];
       if (!ids.length || !confirm(`고른 대화방 ${ids.length}개를 삭제할까요? (브라우저 창과 Notion 페이지는 그대로 둡니다. 진행 중인 방은 건너뜁니다)`)) return;
@@ -1051,63 +1103,83 @@ function appliesPage() {
           .catch(() => failed.push(jobs.find((j) => j.id === id)?.title || id));
       }
       toast(failed.length ? `${ids.length - failed.length}개 삭제 · 진행 중이라 남긴 방: ${failed.join(', ')}` : `${ids.length}개 삭제했습니다`, !!failed.length);
+      if (!failed.length) applyState.editing = false;
       pollApplies();
     };
-    const tools = jobs.length ? h('div', { class: 'row', style: 'gap:4px;flex-wrap:wrap;align-items:center;margin-bottom:2px' },
-      h('button', { class: 'btn', type: 'button', onclick: () => { jobs.forEach((j) => picked.add(j.id)); drawApplies(); } }, '전체 선택'),
-      h('button', { class: 'btn', type: 'button', disabled: !picked.size, onclick: () => { picked.clear(); drawApplies(); } }, '전체 선택 해제'),
-      h('button', { class: 'btn danger', type: 'button', disabled: !picked.size, onclick: removePicked }, `선택 삭제${picked.size ? ` (${picked.size})` : ''}`)) : null;
-    list.replaceChildren(...(jobs.length ? [tools, ...jobs.map((j) => h('div', { class: 'room-row' },
-      h('input', { type: 'checkbox', 'aria-label': `${j.title} 선택`, checked: picked.has(j.id), onchange: (e) => { e.target.checked ? picked.add(j.id) : picked.delete(j.id); drawApplies(); } }),
-      h('button', { class: `room${j.id === applyState.active ? ' active' : ''}`, type: 'button', onclick: () => { applyState.active = j.id; drawApplies(); } },
-        j.status === 'waiting' ? h('span', { class: 'dot', title: '확인이 필요합니다' }) : null,
-        h('div', { class: 't' }, h('span', { style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, j.title), h('span', { class: `badge ${STATUS_TEXT[j.status][0]}` }, STATUS_TEXT[j.status][1])),
-        h('div', { class: 'a' }, j.status === 'waiting' ? `🙋 ${j.waiting || '확인이 필요합니다'}` : j.activity))))] : [h('p', { class: 'muted small' }, '아직 맡긴 지원서가 없습니다. "+ 새 지원서"를 눌러 Notion 공고를 고르세요.')]));
+    const setEditing = (on) => { applyState.editing = on; if (!on) picked.clear(); drawApplies(); };
+    const allPicked = jobs.length > 0 && picked.size === jobs.length;
+    const tools = h('div', { class: 'room-tools' },
+      editing
+        ? [h('span', { class: 'count' }, `${picked.size}개 선택`),
+          h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { allPicked ? picked.clear() : jobs.forEach((j) => picked.add(j.id)); drawApplies(); } }, allPicked ? '전체 선택 해제' : '전체 선택'),
+          h('button', { class: 'btn ghost sm danger', type: 'button', disabled: !picked.size, onclick: removePicked }, '삭제'),
+          h('button', { class: 'btn ghost sm', type: 'button', onclick: () => setEditing(false) }, '완료')]
+        : [h('span', { class: 'count' }, `대화방 ${jobs.length}`),
+          jobs.length ? h('button', { class: 'btn ghost sm', type: 'button', onclick: () => setEditing(true) }, '편집') : null]);
+    const rooms = jobs.map((j) => {
+      const room = h('button', { class: `room${j.id === applyState.active ? ' active' : ''}`, type: 'button', onclick: () => {
+        if (editing) { picked.has(j.id) ? picked.delete(j.id) : picked.add(j.id); } else applyState.active = j.id;
+        drawApplies();
+      } },
+        h('div', { class: 't' },
+          j.status === 'waiting' ? h('span', { class: 'dot', title: '확인이 필요합니다' }) : null,
+          h('span', { class: 'name' }, j.title),
+          h('span', { class: `badge ${STATUS_TEXT[j.status][0]}` }, STATUS_TEXT[j.status][1])),
+        h('div', { class: 'a' }, j.status === 'waiting' ? j.waiting || '확인이 필요합니다' : j.activity));
+      return editing
+        ? h('div', { class: 'room-row' }, h('input', { type: 'checkbox', 'aria-label': `${j.title} 선택`, checked: picked.has(j.id), onchange: (e) => { e.target.checked ? picked.add(j.id) : picked.delete(j.id); drawApplies(); } }), room)
+        : room;
+    });
+    list.replaceChildren(tools, h('div', { class: 'room-scroll' }, rooms.length ? rooms : h('p', { class: 'room-empty' }, '아직 맡긴 지원서가 없습니다.\n"새 지원서"를 눌러 Notion 공고를 고르세요.')));
+
     const job = applyState.jobs.find((j) => j.id === applyState.active);
     chat.style.display = job ? '' : 'none';
     if (!job) return;
     const inAside = job.executionMode === 'aside';
     foot.style.display = inAside ? 'none' : '';
     const busy = ['queued', 'running'].includes(job.status);
+    const ended = ['done', 'error', 'stopped', 'idle'].includes(job.status);
     for (const b of [submittedBtn, notSubmittedBtn]) { b.disabled = busy; b.title = busy ? '진행 중인 작업은 먼저 중지해 주세요' : 'Notion 제출 상태를 바꾸고 작업을 완료로 표시합니다'; }
-    if (shownJob !== job.id) input.value = sessionStorage.getItem(draftKey(job.id)) || '';
+    if (shownJob !== job.id) { input.value = sessionStorage.getItem(draftKey(job.id)) || ''; setTimeout(grow, 0); }
+    const more = h('details', { class: 'more', open: menuOpen || null, ontoggle: (e) => { menuOpen = e.target.open; } },
+      h('summary', { class: 'btn', 'aria-label': '더 보기', title: '더 보기' }, '⋯'),
+      h('div', { class: 'menu', role: 'menu' },
+        h('button', { type: 'button', role: 'menuitem', onclick: pick(() => showAsideHandoff(job.id)) }, inAside ? '자료 복사 · Aside 열기' : 'Aside로 이어가기'),
+        inAside ? h('button', { type: 'button', role: 'menuitem', title: 'Aside 작업을 먼저 마친 후 전환하세요', onclick: pick(() => api('POST', '/api/apply/autojob', { id: job.id }).then(pollApplies).catch(e => toast(e.message, true))) }, 'Auto-Job으로 전환') : null,
+        h('button', { type: 'button', role: 'menuitem', class: 'danger', disabled: !ended, title: ended ? null : '진행 중인 작업은 먼저 중지해 주세요', onclick: pick(() => removeOne(job)) }, '대화방 삭제')));
     head.replaceChildren(
-      h('div', null, h('strong', null, job.title), ' ', h('span', { class: `badge ${STATUS_TEXT[job.status][0]}` }, inAside ? 'Aside 패널' : STATUS_TEXT[job.status][1])),
-      h('div', { class: 'row', style: 'gap:6px' },
-        h('button', { class: 'btn', type: 'button', onclick: () => showAsideHandoff(job.id) }, inAside ? '자료 복사 · Aside 열기' : 'Aside로 이어가기'),
-        inAside ? h('button', { class: 'btn', type: 'button', title: 'Aside 작업을 먼저 마친 후 전환하세요', onclick: () => api('POST', '/api/apply/autojob', { id: job.id }).then(pollApplies).catch(e => toast(e.message, true)) }, 'Auto-Job으로 전환') : null,
-        !inAside && ['running', 'waiting', 'done', 'error', 'stopped', 'idle'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: async () => { const r = await api('POST', '/api/apply/focus', { id: job.id }).catch((e) => toast(e.message, true)); if (r && !r.focused) toast('이 지원서의 창은 이미 끝나 연결이 없습니다. 브라우저에서 직접 확인해 주세요.'); } }, '창 보기') : null,
-        !inAside && ['queued', 'running', 'waiting'].includes(job.status) ? h('button', { class: 'btn danger', type: 'button', onclick: () => confirm(`${job.title} 지원서를 중지할까요? (입력한 칸과 창은 그대로 둡니다)`) && api('POST', '/api/apply/stop', { id: job.id }).then(pollApplies).catch((e) => toast(e.message, true)) }, '중지') : null,
-        ['done', 'error', 'stopped', 'idle'].includes(job.status) ? h('button', { class: 'btn', type: 'button', onclick: () => confirm(`${job.title} 대화방을 삭제할까요? (브라우저 창과 Notion 페이지는 그대로 둡니다)`) && api('POST', '/api/apply/remove', { id: job.id }).then(() => { delete applyState.msgs[job.id]; applyState.active = null; pollApplies(); }).catch((e) => toast(e.message, true)) }, '삭제') : null,
-        job.notionUrl ? h('button', { class: 'btn', type: 'button', onclick: async () => {
-          const r = await api('POST', '/api/apply/notion-open', { id: job.id }).catch((e) => toast(e.message, true));
-          if (r && !r.opened) window.open(r.url, '_blank', 'noopener'); // Notion 앱이 없으면 브라우저로
-        } }, 'Notion 페이지로 이동') : null),
+      h('div', { class: 'who' }, h('strong', null, job.title), h('span', { class: `badge ${STATUS_TEXT[job.status][0]}` }, inAside ? 'Aside 패널' : STATUS_TEXT[job.status][1])),
+      h('div', { class: 'acts' },
+        !inAside && job.status !== 'queued' ? h('button', { class: 'btn sm', type: 'button', onclick: () => focusWindow(job) }, '창 보기') : null,
+        job.notionUrl ? h('button', { class: 'btn sm', type: 'button', onclick: () => openNotion(job) }, 'Notion 페이지로 이동') : null,
+        !inAside && !ended ? h('button', { class: 'btn sm danger', type: 'button', onclick: () => stopJob(job) }, '중지') : null,
+        more),
     );
     const msgs = applyState.msgs[job.id] || [];
     if (shownJob !== job.id || shownCount !== msgs.length) {
       const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60 || shownJob !== job.id;
-      body.replaceChildren(...msgs.map((m) => h('div', { class: `msg ${m.kind}` }, m.kind === 'ask' ? `🙋 확인이 필요해요\n${m.text}` : m.kind === 'ai' ? `🤖 ${m.text}` : m.text)));
+      body.replaceChildren(...msgs.map((m) => h('div', { class: `msg ${m.kind}` }, m.kind === 'ask' ? `🙋 확인이 필요해요\n${m.text}` : m.text)));
       if (atBottom) body.scrollTop = body.scrollHeight;
       shownJob = job.id;
       shownCount = msgs.length;
     }
-    input.disabled = false;
     input.placeholder =
       job.status === 'waiting'
-        ? '여기에 답을 적으세요 (Enter 보내기). 비밀번호는 적지 말고 브라우저 창에 직접 입력하세요.'
-        : ['done', 'error', 'stopped', 'idle'].includes(job.status)
-          ? '자유롭게 질문하거나 이어가기를 요청하세요. 예: "왜 이 직무야?", "3번 문항 다시 써 줘"'
-          : '질문하거나 새 지시를 보내세요. 이 회사의 현재 실행을 멈추고 AI가 답하거나 이어갑니다.';
+        ? '답을 적어 주세요. 비밀번호는 브라우저 창에 직접 입력하세요.'
+        : ended
+          ? '질문하거나 이어서 할 일을 적어 주세요. 예: "3번 문항 다시 써 줘"'
+          : '새 지시를 보내면 지금 실행을 멈추고 반영합니다.';
   };
 
-  const newBtn = h('button', { class: 'btn primary', type: 'button', onclick: openPicker }, '+ 새 지원서');
+  const newBtn = h('button', { class: 'btn primary', type: 'button', onclick: openPicker }, '새 지원서');
   setTimeout(() => { drawApplies(); pollApplies(); }, 0);
-  return page('지원서 작성', '회사별 AI에게 자유롭게 질문하거나 지시하세요. 새 메시지는 해당 회사의 실행만 멈추고 반영합니다. 인증은 실제 브라우저에서 직접 하고 알려 주세요. 대화와 연결한 탭은 재시작 후에도 복구하며, 최종 제출은 직접 합니다.',
-    h('div', { class: 'row', style: 'margin-bottom:12px;gap:12px;flex-wrap:wrap;align-items:center' }, newBtn,
-      h('span', { class: 'muted small' }, `동시에 ${state.settings.apply.max_parallel}개까지 진행 (설정 → 작성 → 지원서 입력 규칙)`)),
+  return [
+    h('div', { class: 'page-head' },
+      h('div', null, h('h1', null, '지원서 작성'),
+        h('p', { class: 'lead' }, `회사별 AI에게 묻거나 지시하세요. 동시에 ${state.settings.apply.max_parallel}개까지 진행하고, 최종 제출은 직접 합니다.`)),
+      newBtn),
     h('div', { class: 'rooms' }, list, chat),
-  );
+  ];
 }
 
 async function openPicker() {
@@ -1197,7 +1269,7 @@ function startPage() {
   api('GET', '/api/doctor').then(({ checks }) => {
     const todo = checks.filter((c) => c.status !== 'ok').length;
     box.replaceChildren(
-      h('div', { class: `notice${todo ? '' : ' ok'}` }, todo ? `아래 ${todo}가지를 마치면 공고 수집과 지원서 작성을 쓸 수 있습니다.` : '모두 준비됐습니다. 실행 → 공고 수집에서 "미리보기"로 시작해 보세요.'),
+      h('div', { class: `notice${todo ? '' : ' ok'}` }, todo ? `할 일이 ${todo}개 남았습니다.` : '모두 준비됐습니다. 공고 수집에서 "미리보기"로 시작해 보세요.'),
       card(null, h('table', { class: 'grid' },
         h('tbody', null, checks.map((c) => h('tr', null,
           h('td', { style: 'white-space:nowrap' }, h('span', { class: `badge ${MARK[c.status][0]}` }, MARK[c.status][1])),
@@ -1206,10 +1278,10 @@ function startPage() {
         ))))),
     );
   }).catch((e) => box.replaceChildren(h('div', { class: 'notice bad' }, e.message)));
-  return page('시작하기', '처음 쓰는 순서: ① AI 연결 ② 내 정보와 자료 폴더 연결 ③ 수집 사이트와 기업 구분 (검색어 추가는 선택) ④ Notion 연결 ⑤ 브라우저에서 채용 사이트 로그인 ⑥ 공고 수집 미리보기 → 등록 ⑦ 지원서 작성(autojob apply).',
+  return page('시작하기', '아래 항목을 차례로 마치면 공고 수집과 지원서 작성을 쓸 수 있습니다.',
     box,
     card('지원서 작성',
-      h('p', { class: 'muted small', style: 'margin-top:0' }, '실행 → 지원서 작성에서 Notion 공고를 골라 여러 개를 함께 맡길 수 있습니다. 터미널에서 하나씩 하려면:'),
+      h('p', { class: 'muted small', style: 'margin-top:0' }, '지원서 작성에서 Notion 공고를 골라 여러 개를 함께 맡길 수 있습니다. 터미널에서 하나씩 하려면:'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => go('settings', 'applies') }, '지원서 작성으로 가기')),
       h('pre', { class: 'code', style: 'margin-top:8px' }, 'autojob apply "https://www.notion.so/…공고 페이지…"')),
   );
@@ -1226,7 +1298,7 @@ function collectPage() {
   const out = h('div'), progress = h('div', { 'aria-live': 'polite' });
   if (lastCollect) drawCollect(out, lastCollect);
   let current = null, renderedKey = '', pollTimer, groupingBusy = false;
-  const preview = h('button', { class: 'btn', type: 'button', disabled: true, onclick: () => start(true) }, '미리보기 (Notion 에 쓰지 않음)');
+  const preview = h('button', { class: 'btn primary', type: 'button', disabled: true, onclick: () => start(true) }, '미리보기');
   const grouping = h('input', { type: 'checkbox', checked: !!s.collect.group_affiliates, onchange: async () => {
     const enabled = grouping.checked;
     groupingBusy = true; grouping.disabled = true; preview.disabled = true;
@@ -1303,13 +1375,13 @@ function collectPage() {
   if (!state.searchProfileReady) warn.push('맞춤 검색을 위해 내 정보에 희망 직무·경험을 입력하거나 소재 폴더를 연결해 주세요. 직접 지정한 검색어·사이트 직무 분류만으로도 검색할 수 있습니다.');
   if (!(state.secrets.NOTION_TOKEN.set && s.notion.data_source_id)) warn.push('Notion 이 연결되지 않아 미리보기만 할 수 있습니다.');
   setTimeout(poll, 0);
-  return page('공고 수집', '사이트의 직무 필터로 범위를 좁힌 뒤 기업 조건과 희망 직무를 대조합니다. 후보를 고르면 선택한 공고만 상세 내용과 지원 링크를 확인한 뒤 Notion에 등록합니다. 모은 목록은 중지하거나 앱을 다시 켜도 남습니다.',
+  return page('공고 수집', '기업 조건과 희망 직무에 맞는 공고를 모읍니다. 후보 중 고른 공고만 Notion에 등록하고, 모은 목록은 앱을 다시 켜도 남습니다.',
     warn.length ? h('div', { class: 'notice' }, h('ul', { style: 'margin:0' }, warn.map((w) => h('li', null, w)))) : null,
     card(null,
       h('div', { class: 'field' }, h('label', null, '사이트'), picks),
       h('div', { class: 'field' }, h('label', null, '표시할 후보 수'), limit, h('div', { class: 'hint' }, '비워 두면 모든 후보를 표시합니다. 사이트 목록 검색 범위는 동일합니다.')),
-      h('div', { class: 'field' }, h('label', null, grouping, ' 계열사 간 중복 지원 불가 시 한 페이지 안에 정리하기'), groupingHint),
-      h('div', { class: 'row', style: 'margin-top:10px' }, preview, stop)),
+      h('div', { class: 'field' }, h('label', null, '계열사 묶기'), h('label', { class: 'row', style: 'padding-top:9px;cursor:pointer' }, grouping, '중복 지원이 안 되는 계열사는 한 페이지로 정리'), groupingHint),
+      h('div', { class: 'row', style: 'margin-top:12px' }, preview, stop, h('span', { class: 'muted small' }, '미리보기는 Notion에 쓰지 않습니다'))),
     progress, out);
 }
 

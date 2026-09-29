@@ -14,7 +14,6 @@ const { prepareSearch } = await import('../src/jobs/search-plan');
 const { runCodexAgent } = await import('../src/llm/codex-cli');
 const { pdfText } = await import('../src/profile/search-sources');
 const { startServer } = await import('../src/server/server');
-const { routes } = await import('../src/server/api');
 const s = parseSettings(readFileSync(paths.settingsExample, 'utf8'));
 const plans: Awaited<ReturnType<typeof prepareSearch>>[] = [];
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -47,8 +46,6 @@ try {
     plans.push(plan);
   }
   assert.notDeepEqual(plans[0].keywords, plans[1].keywords);
-  const report = { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), dryRun: true, notion: 'not_configured', sources: [], counts: {}, ai: { linkSearched: 0, linkFound: 0, rolesTagged: 0, costUsd: 0, errors: [] }, items: [], searchPlan: plans[1] };
-  routes['POST /api/collect/run'] = () => ({ report, dir: 'synthetic-preview', labels: {} });
   const started = await startServer(0); server = started.server;
   browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
@@ -60,7 +57,7 @@ try {
   const out = path.join(ROOT, 'data/verification'); mkdirSync(out, { recursive: true });
   await page.screenshot({ path: path.join(out, 'search-keywords.png'), fullPage: true });
   await page.getByRole('button', { name: '공고 수집', exact: true }).click();
-  await page.getByRole('button', { name: '미리보기 (Notion 에 쓰지 않음)', exact: true }).click();
+  await page.getByRole('button', { name: '미리보기', exact: true }).click();
   await page.getByRole('heading', { name: '내 자료로 정한 검색 방향', exact: true }).waitFor();
   await page.getByText('선정 근거', { exact: true }).first().click();
   assert.ok((await page.locator('body').innerText()).includes('본인경험.md'));

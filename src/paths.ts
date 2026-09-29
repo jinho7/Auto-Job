@@ -19,8 +19,6 @@ export function resolveHome(root = ROOT, env = process.env.AUTOJOB_HOME, home = 
 
 const HOME = resolveHome();
 
-export const DATA_HOME = HOME;
-
 export const paths = {
   prompts: path.join(ROOT, 'prompts'),
   settings: path.join(HOME, 'settings.yaml'),

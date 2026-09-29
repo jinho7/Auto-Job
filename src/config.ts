@@ -161,20 +161,14 @@ export const settingsSchema = z.object({
       /** 비우면 AI 연결의 기본 모델 */
       model: z.string().default(''),
       effort: EFFORT,
-      /** 이전 설정 파일 호환용. 현재 에이전트가 조사 시점을 판단한다 */
-      pre_research: z.boolean().default(true),
-      /** 이전 설정 파일 호환용. 현재 에이전트가 필요한 인증을 요청한다 */
-      login_wait: z.enum(['auto', 'always', 'never']).default('auto'),
       /** 설정 화면에서 지원서를 여러 개 맡길 때 동시에 진행할 개수 (나머지는 차례를 기다림) */
       max_parallel: z.number().int().min(1).max(8).default(4),
-      /** 이전 설정 파일 호환용. 현재는 AI가 화면에서 저장 버튼을 선택한다. */
-      save_buttons: z.array(z.string()).default(['임시저장', '임시 저장', '중간저장', '저장하기', '저장']),
       /** 다 쓰고 나서 임시저장을 누를지 */
       save_draft: z.boolean().default(true),
       /** Notion 페이지 본문 정리와 제출 상태 변경을 할지 */
       update_notion: z.boolean().default(true),
     })
-    .default({ extra_rules: [], model: '', effort: '', pre_research: true, login_wait: 'auto', max_parallel: 4, save_buttons: ['임시저장', '임시 저장', '중간저장', '저장하기', '저장'], save_draft: true, update_notion: true }),
+    .default({ extra_rules: [], model: '', effort: '', max_parallel: 4, save_draft: true, update_notion: true }),
   essay: z.object({
     tone: z.string(),
     subtitle: z.boolean(),

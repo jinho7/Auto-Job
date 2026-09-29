@@ -45,7 +45,8 @@ try {
   await b.click(); assert.equal(await input.inputValue(), 'B 회사 이어서 작성');
   await page.reload(); await page.locator('.room').first().waitFor(); await b.click(); assert.equal(await input.inputValue(), 'B 회사 이어서 작성');
   assert.equal(await page.locator('body').innerText().then(s => s.includes('기록만 했다가')), false);
-  await page.getByRole('button', { name: 'Aside로 이어가기', exact: true }).click();
+  await page.getByLabel('더 보기').click();
+  await page.getByRole('menuitem', { name: 'Aside로 이어가기', exact: true }).click();
   const nativePrompt = page.getByRole('textbox', { name: 'Aside에 붙여넣을 요청' });
   await nativePrompt.waitFor(); assert.match(await nativePrompt.inputValue(), /합성 요청/);
   assert.equal(await input.isVisible(), false);
@@ -60,13 +61,21 @@ try {
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '합성 요청을 Aside에서 이어가 주세요');
   await page.getByRole('button', { name: '닫기', exact: true }).click();
   assert.equal(await page.getByRole('button', { name: '중지', exact: true }).count(), 0);
-  await page.getByRole('button', { name: 'Auto-Job으로 전환', exact: true }).click();
+  await page.getByLabel('더 보기').click();
+  await page.getByRole('menuitem', { name: 'Auto-Job으로 전환', exact: true }).click();
   await input.waitFor({ state: 'visible' }); assert.equal(await input.inputValue(), 'B 회사 이어서 작성');
   const dir = path.join(ROOT, 'data/verification'); mkdirSync(dir, { recursive: true });
   await page.screenshot({ path: path.join(dir, 'conversation-ui-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: path.join(dir, 'conversation-ui-mobile.png'), fullPage: true });
-  await page.getByRole('button', { name: '+ 새 지원서', exact: true }).click();
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.getByRole('button', { name: '편집', exact: true }).click();
+  await page.getByRole('button', { name: '전체 선택', exact: true }).click();
+  assert.equal(await page.locator('.room-tools .count').innerText(), '2개 선택');
+  assert.equal(await page.locator('.room-row input:checked').count(), 2);
+  await page.getByRole('button', { name: '완료', exact: true }).click();
+  assert.equal(await page.locator('.room-row').count(), 0);
+  await page.getByRole('button', { name: '새 지원서', exact: true }).click();
   const mode = page.getByRole('combobox', { name: '지원서 작업 방식' });
   await mode.waitFor(); assert.equal(await mode.inputValue(), 'autojob');
   await page.getByPlaceholder('또는 지원 페이지 주소 직접 넣기 (https://…)').fill('https://example.test/application');
@@ -78,7 +87,7 @@ try {
   assert.equal(await input.isVisible(), false);
   await page.screenshot({ path: path.join(dir, 'conversation-ui-aside.png'), fullPage: true });
   assert.deepEqual(errors, []);
-  const output = { testedAt: new Date().toISOString(), synthetic: true, actualAI: false, errors, checks: ['대화방별 입력 초안 분리', '정확한 회사로 전송', '새로고침 후 초안 유지', '대화 상태 렌더링', 'Aside 자료 요청/클립보드 복사/선택한 회사로 열기', 'Aside에서 Auto-Job으로 복귀 시 초안 보존', '새 지원서 기본 Auto-Job / Aside 선택과 자료 준비'] };
+  const output = { testedAt: new Date().toISOString(), synthetic: true, actualAI: false, errors, checks: ['대화방별 입력 초안 분리', '정확한 회사로 전송', '새로고침 후 초안 유지', '대화 상태 렌더링', 'Aside 자료 요청/클립보드 복사/선택한 회사로 열기', 'Aside에서 Auto-Job으로 복귀 시 초안 보존', '새 지원서 기본 Auto-Job / Aside 선택과 자료 준비', '대화방 편집: 전체 선택과 해제'] };
   writeFileSync(path.join(dir, 'conversation-ui.json'), JSON.stringify(output, null, 2), { mode: 0o600 });
   console.log(output);
 } finally { await browser.close(); await new Promise<void>(r => server.close(() => r())); rmSync(home, { recursive: true, force: true }); }

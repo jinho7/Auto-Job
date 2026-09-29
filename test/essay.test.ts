@@ -2,7 +2,6 @@ import './setup-env';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { normalizeQuestions } from '../src/apply/run';
 import { parseSettings, type Settings } from '../src/config';
 import { blindTermsFromProfile, checkEssay, countChars, parseLimit, parseQuestionsText, targetRange } from '../src/essay/checks';
 import { formatEssays, styleRules, writeEssays } from '../src/essay/pipeline';
@@ -76,19 +75,10 @@ test('블라인드 단어는 내 정보의 이름, 학교, 동아리에서', () 
   assert.match(rules, /"~를 넘어"/);
 });
 
-test('JSON 꺼내기와 문항 정리', () => {
+test('JSON 꺼내기', () => {
   assert.deepEqual(extractJson('설명\n```json\n{"a":1}\n```'), { a: 1 });
   assert.deepEqual(extractJson('앞 {"b":2} 뒤'), { b: 2 });
   assert.throws(() => extractJson('없음'), /JSON/);
-  const qs = normalizeQuestions([
-    { question: '지원 동기 (700자 이내)', ref: 'f0-3' },
-    { question: '협업 경험', ref: 'f0-5', maxChars: '500', unit: 'chars_no_space' },
-    { question: '' },
-  ]);
-  assert.deepEqual(qs, [
-    { id: 1, question: '지원 동기 (700자 이내)', unit: 'chars', maxChars: 700, ref: 'f0-3' },
-    { id: 2, question: '협업 경험', unit: 'chars_no_space', maxChars: 500, ref: 'f0-5' },
-  ]);
 });
 
 test('작성 흐름: 초안 → 검토(고칠 것 있음) → 고쳐 쓰기 → 글자수 문제 고치기', async () => {

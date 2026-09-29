@@ -112,7 +112,6 @@ export function safeFileName(name: string): string {
 export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> = {
   'GET /api/state': () => state(),
   'GET /api/doctor': async () => ({ checks: await runDoctor() }),
-  'POST /api/llm/test': async () => testAi(loadSettings()),
 
   // ── AI 연결 여러 개 ──
   'GET /api/llm/connections': () => ({ connections: describeConnections(loadSettings()) }),
@@ -381,12 +380,6 @@ export const routes: Record<string, (body: Body) => unknown | Promise<unknown>> 
   },
   'GET /api/collect/saramin-duty-categories': async () => ({ categories: await loadSaraminCategories(new PoliteHttp(loadSettings().collect.request_delay_ms)) }),
   'GET /api/collect/catch-duty-categories': async () => ({ categories: await loadCatchCategories(new PoliteHttp(loadSettings().collect.request_delay_ms)) }),
-  'POST /api/collect/run': async (b) => {
-    collectTask.start(collectOptions(b));
-    const task = await collectTask.wait();
-    if (!task.result) throw new Error(task.error ?? '수집을 완료하지 못했습니다.');
-    return { ...task.result, log: task.log };
-  },
   'POST /api/collect/start': (b) => collectTask.start(collectOptions(b)),
   'POST /api/collect/selected': (b) => {
     const ids = Array.isArray(b.ids) ? b.ids.map(String) : [];

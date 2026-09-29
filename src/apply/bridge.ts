@@ -1,7 +1,7 @@
 // MCP 서버(Claude 가 띄운 별도 프로세스) ↔ autojob apply(사용자 앞의 프로세스) 연결.
 // MCP 서버는 표준입출력을 Claude 와의 통신에 쓰므로, 사용자에게 묻거나 결과를 모으는 일은 이 연결로 한다.
 import { randomBytes } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
+import { createServer } from 'node:http';
 
 export type BridgeEvent =
   | { type: 'blank'; field: string; reason: string }

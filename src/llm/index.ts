@@ -12,11 +12,10 @@ import { connectionKeyName, getSecret } from '../secrets';
 import { runApiAgent } from './api-agent';
 import { runClaudeAgent, type AgentResult, type AgentRun, type RunAgent } from './claude-cli';
 import { runCodexAgent } from './codex-cli';
-import { classifyFailure, connectionLabel, connectionsOf, KIND_LABEL, markConnection, restingState, TYPE_LABEL, type Connection, type LlmType } from './pool';
+import { classifyFailure, connectionLabel, connectionsOf, KIND_LABEL, markConnection, restingState, type Connection, type LlmType } from './pool';
 
 export type { AgentRun, RunAgent } from './claude-cli';
 
-export const BACKEND_LABEL = TYPE_LABEL;
 
 /** API 방식에서 모델을 비워 두면 쓰는 기본 모델 */
 export const DEFAULT_API_MODEL = { 'anthropic-api': 'claude-opus-5', 'openai-api': 'gpt-5' } as const;

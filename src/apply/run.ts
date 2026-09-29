@@ -3,13 +3,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { lastImport } from '../browser/default-profile';
 import { BrowserSession } from '../browser/session';
 import { loadSettings, type Settings } from '../config';
-import { parseLimit, checkEssay, blindTermsFromProfile } from '../essay/checks';
+import { checkEssay, blindTermsFromProfile } from '../essay/checks';
 import { applicationToolset, type AgentTaskState } from './agent-tools';
 import { formatEssays, type EssayResult } from '../essay/pipeline';
-import type { CountUnit, EssayQuestion } from '../essay/types';
+import type { EssayQuestion } from '../essay/types';
 import { agentFor, modelFor } from '../llm';
 import type { AgentResult } from '../llm/claude-cli';
 import { NotionClient, propText } from '../notion/client';
@@ -119,30 +118,6 @@ export function buildSystemPrompt(settings: Settings): string {
   return extra.length ? `${base}\n\n## 사용자가 추가한 규칙\n${extra.map((r) => `- ${r}`).join('\n')}` : base;
 }
 
-/** AI 가 기록한 문항을 정리한다: 번호 매기기, 단위 확인, 문항 글에서 제한 보충 */
-export function normalizeQuestions(raw: unknown[]): EssayQuestion[] {
-  const units: CountUnit[] = ['chars', 'chars_no_space', 'bytes'];
-  return raw
-    .map((r) => r as Record<string, unknown>)
-    .filter((r) => typeof r.question === 'string' && r.question.trim())
-    .map((r, i) => {
-      const fromText = parseLimit(String(r.question));
-      const num = (v: unknown) => (typeof v === 'number' && v > 0 ? Math.round(v) : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined);
-      const maxChars = num(r.maxChars) ?? fromText.maxChars;
-      const minChars = num(r.minChars) ?? fromText.minChars;
-      return {
-        id: i + 1,
-        question: String(r.question).trim(),
-        ...(['essay', 'notice', 'short_answer'].includes(String(r.kind)) ? { kind: r.kind as EssayQuestion['kind'] } : {}),
-        unit: units.includes(r.unit as CountUnit) ? (r.unit as CountUnit) : fromText.unit,
-        ...(maxChars ? { maxChars } : {}),
-        ...(minChars ? { minChars } : {}),
-        ...(typeof r.ref === 'string' && r.ref ? { ref: r.ref } : {}),
-        ...(typeof r.note === 'string' && r.note.trim() ? { note: r.note.trim() } : {}),
-      };
-    });
-}
-
 /** 지원서 작성 결과 → Notion 페이지 섹션 내용 */
 export function buildPageContent(x: {
   essay?: EssayStepReport;
@@ -167,15 +142,6 @@ export function buildPageContent(x: {
     projects: x.formInfo?.projects,
     documents: [...(x.formInfo?.documents ?? []), ...x.uploads.map((u) => `올린 파일: ${u}`)],
   };
-}
-
-/** 자동화 프로필에 평소 프로필의 비밀번호를 아직 안 가져왔으면 로그인 대기 때 알려 준다 */
-export function loginHelp(settings: Settings, mark = lastImport): string {
-  const driver = settings.browser.driver === 'chrome' ? 'chrome' : 'aside';
-  const m = mark(settings, driver);
-  if (!m) return '   💡 이 창은 자동화 전용 프로필이라 평소 쓰는 프로필의 저장된 비밀번호가 없습니다. 설정 → 브라우저 → "비밀번호 가져오기"를 한 번 하면 다음부터 로그인 칸이 자동 완성됩니다 (로그인 상태까지 가져오면 로그인 자체를 건너뛸 수 있습니다).';
-  if (!m.cookies) return '   💡 저장된 비밀번호는 가져와 둔 프로필입니다. 로그인 칸을 누르면 자동 완성이 뜹니다.';
-  return '   💡 평소 프로필의 로그인 상태까지 가져와 둔 프로필입니다. 이미 로그인되어 있으면 바로 지원서 화면으로 가면 됩니다.';
 }
 
 export async function applyNow(o: ApplyOptions): Promise<ApplyReport> {
